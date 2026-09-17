@@ -27,21 +27,20 @@ const THEME = {
 } as unknown as PluginCodeThemeData;
 
 describe("shikiLangForPath", () => {
-  it("maps common extensions to shiki language ids", () => {
+  it("maps TypeScript paths to shiki language ids", () => {
     expect(shikiLangForPath("src/app.tsx")).toBe("tsx");
     expect(shikiLangForPath("src/app.ts")).toBe("typescript");
-    expect(shikiLangForPath("x.JS")).toBe("javascript");
-    expect(shikiLangForPath("run.sh")).toBe("shellscript");
-    expect(shikiLangForPath("run.zsh")).toBe("shellscript");
-    expect(shikiLangForPath("data.yml")).toBe("yaml");
-    expect(shikiLangForPath("doc.md")).toBe("markdown");
-    expect(shikiLangForPath("a/b/Dockerfile")).toBe("dockerfile");
-    expect(shikiLangForPath("a/b/Makefile")).toBe("make");
+    expect(shikiLangForPath("src/app.mts")).toBe("typescript");
+    expect(shikiLangForPath("src/app.cts")).toBe("typescript");
+    expect(shikiLangForPath("SRC/APP.TS")).toBe("typescript");
   });
 
   it("returns null when there is no grammar", () => {
+    expect(shikiLangForPath("x.JS")).toBeNull();
+    expect(shikiLangForPath("run.sh")).toBeNull();
+    expect(shikiLangForPath("data.yml")).toBeNull();
+    expect(shikiLangForPath("doc.md")).toBeNull();
     expect(shikiLangForPath("notes.txt")).toBeNull();
-    expect(shikiLangForPath("Makefile.am")).toBeNull();
     expect(shikiLangForPath("no-extension")).toBeNull();
   });
 });
@@ -59,7 +58,7 @@ describe("isHighlightableSize", () => {
 });
 
 describe("edit highlighter", () => {
-  it("builds from BB's theme object and loads the mapped grammars", () => {
+  it("builds from BB's theme object and loads the TypeScript grammars", () => {
     const highlighter = getEditHighlighter(THEME);
     expect(highlighter).not.toBeNull();
     expect(highlighter!.getLoadedLanguages()).toContain("typescript");
@@ -90,6 +89,18 @@ describe("edit highlighter", () => {
         "#888888",
     );
     expect(comment).toBeDefined();
+  });
+
+  it("tokenizes tsx standalone", () => {
+    const highlighter = getEditHighlighter(THEME)!;
+    const nodes = highlightToNodes(
+      highlighter,
+      "const el = <div className=\"x\" />;",
+      "tsx",
+      THEME,
+    );
+    expect(nodes).not.toBeNull();
+    expect(nodes!.filter(isValidElement).length).toBeGreaterThan(0);
   });
 
   it("keeps the trailing caret line with a zero-width space", () => {

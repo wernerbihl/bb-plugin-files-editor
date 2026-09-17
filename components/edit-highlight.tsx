@@ -9,44 +9,8 @@ import type {
 import type { PluginCodeThemeData } from "@get-bb/plugin-sdk/app";
 import { extensionOf } from "@/lib/file-kind";
 
-import langAstro from "@shikijs/langs/astro";
-import langC from "@shikijs/langs/c";
-import langCpp from "@shikijs/langs/cpp";
-import langCsharp from "@shikijs/langs/csharp";
-import langCss from "@shikijs/langs/css";
-import langDart from "@shikijs/langs/dart";
-import langDockerfile from "@shikijs/langs/dockerfile";
-import langElixir from "@shikijs/langs/elixir";
-import langGo from "@shikijs/langs/go";
-import langHtml from "@shikijs/langs/html";
-import langJava from "@shikijs/langs/java";
-import langJavascript from "@shikijs/langs/javascript";
-import langJson from "@shikijs/langs/json";
-import langJsonc from "@shikijs/langs/jsonc";
-import langJsx from "@shikijs/langs/jsx";
-import langKotlin from "@shikijs/langs/kotlin";
-import langLess from "@shikijs/langs/less";
-import langLua from "@shikijs/langs/lua";
-import langMake from "@shikijs/langs/make";
-import langMarkdown from "@shikijs/langs/markdown";
-import langMdx from "@shikijs/langs/mdx";
-import langPerl from "@shikijs/langs/perl";
-import langPhp from "@shikijs/langs/php";
-import langPython from "@shikijs/langs/python";
-import langR from "@shikijs/langs/r";
-import langRuby from "@shikijs/langs/ruby";
-import langRust from "@shikijs/langs/rust";
-import langScss from "@shikijs/langs/scss";
-import langShellscript from "@shikijs/langs/shellscript";
-import langSql from "@shikijs/langs/sql";
-import langSvelte from "@shikijs/langs/svelte";
-import langSwift from "@shikijs/langs/swift";
-import langToml from "@shikijs/langs/toml";
 import langTsx from "@shikijs/langs/tsx";
 import langTypescript from "@shikijs/langs/typescript";
-import langVue from "@shikijs/langs/vue";
-import langXml from "@shikijs/langs/xml";
-import langYaml from "@shikijs/langs/yaml";
 
 /**
  * Syntax highlighting for the edit pane, so switching from Read to Edit keeps
@@ -65,64 +29,16 @@ import langYaml from "@shikijs/langs/yaml";
  * colors always match the viewer, including palette and light/dark switches.
  */
 
-/** Extension (lowercase, no dot) to shiki language id. */
+/** Extension (lowercase, no dot) to shiki language id. TypeScript only. */
 const LANG_BY_EXTENSION: Readonly<Record<string, string>> = {
-  astro: "astro",
-  c: "c",
-  cc: "cpp",
-  cjs: "javascript",
-  cpp: "cpp",
-  cs: "csharp",
-  css: "css",
-  dart: "dart",
-  ex: "elixir",
-  exs: "elixir",
-  go: "go",
-  h: "c",
-  hpp: "cpp",
-  html: "html",
-  java: "java",
-  js: "javascript",
-  json: "json",
-  jsonc: "jsonc",
-  jsx: "jsx",
-  kt: "kotlin",
-  less: "less",
-  lua: "lua",
-  md: "markdown",
-  mdx: "mdx",
-  mjs: "javascript",
-  php: "php",
-  pl: "perl",
-  py: "python",
-  r: "r",
-  rb: "ruby",
-  rs: "rust",
-  scss: "scss",
-  sh: "shellscript",
-  sql: "sql",
-  svelte: "svelte",
-  swift: "swift",
-  toml: "toml",
+  cts: "typescript",
+  mts: "typescript",
   ts: "typescript",
   tsx: "tsx",
-  vue: "vue",
-  xml: "xml",
-  yaml: "yaml",
-  yml: "yaml",
-  zsh: "shellscript",
-};
-
-const LANG_BY_FILENAME: Readonly<Record<string, string>> = {
-  dockerfile: "dockerfile",
-  makefile: "make",
 };
 
 /** Null when the path has no grammar: the editor stays plain text. */
 export function shikiLangForPath(path: string): string | null {
-  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
-  const byName = LANG_BY_FILENAME[name];
-  if (byName !== undefined) return byName;
   return LANG_BY_EXTENSION[extensionOf(path)] ?? null;
 }
 
@@ -163,46 +79,7 @@ export function getEditHighlighter(
   const highlighter = createHighlighterCoreSync({
     engine: createJavaScriptRegexEngine(),
     themes: [theme as unknown as ThemeRegistration],
-    langs: [
-      langAstro,
-      langC,
-      langCpp,
-      langCsharp,
-      langCss,
-      langDart,
-      langDockerfile,
-      langElixir,
-      langGo,
-      langHtml,
-      langJava,
-      langJavascript,
-      langJson,
-      langJsonc,
-      langJsx,
-      langKotlin,
-      langLess,
-      langLua,
-      langMake,
-      langMarkdown,
-      langMdx,
-      langPerl,
-      langPhp,
-      langPython,
-      langR,
-      langRuby,
-      langRust,
-      langScss,
-      langShellscript,
-      langSql,
-      langSvelte,
-      langSwift,
-      langToml,
-      langTsx,
-      langTypescript,
-      langVue,
-      langXml,
-      langYaml,
-    ],
+    langs: [langTsx, langTypescript],
   });
   if (cached !== null && typeof cached.highlighter.dispose === "function") {
     cached.highlighter.dispose();
