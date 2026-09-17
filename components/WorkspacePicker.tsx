@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
-import { cn } from "@/lib/utils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { ScopeRef } from "@/lib/route";
 import { sameScope } from "@/lib/route";
 import { defaultOptionFor, groupWorkspaces } from "@/lib/workspaces";
@@ -13,8 +19,8 @@ import type { ResolvedScope, WorkspaceOption, rpcContract } from "../server.js";
  * repeated the project's name on every row, which got unreadable once a
  * project had more than a couple of worktrees.
  *
- * Kept to native `<select>`s: two controls in a narrow sidebar, and the host's
- * overlay stack is better spent on the quick-open palette.
+ * Vendored shadcn Select keeps both controls on the host's BB recipe —
+ * trigger, popover, and items — instead of the browser's native dropdown.
  */
 export function WorkspacePicker({
   current,
@@ -61,96 +67,103 @@ export function WorkspacePicker({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-1">
-      <Field icon="Folder" label="Project">
-        <select
-          value={selectedProjectId}
-          aria-label="Project"
+      <PickerField icon="Folder" label="Project" title="Project">
+        <Select
+          value={selectedProjectId === "" ? undefined : selectedProjectId}
           disabled={isLoading}
-          onChange={(event) => {
+          onValueChange={(value) => {
             const next = defaultOptionFor(
-              groups.find((group) => group.projectId === event.target.value),
+              groups.find((group) => group.projectId === value),
             );
             // Landing on the checkout keeps one click from stranding the user
             // on a project with nothing selected inside it.
             if (next !== null) onSelect(next.ref);
           }}
-          className={selectClass}
         >
-          {isLoading ? <option value="">Loading…</option> : null}
-          {!isLoading && current === null ? (
-            // Without this the browser shows the first option as if it were
-            // chosen, when nothing is actually being browsed.
-            <option value="">Choose a project…</option>
-          ) : null}
-          {current !== null && !knownProject ? (
-            <option value={selectedProjectId}>{current.label}</option>
-          ) : null}
-          {groups.map((group) => (
-            <option key={group.projectId} value={group.projectId}>
-              {group.projectName}
-            </option>
-          ))}
-        </select>
-      </Field>
+          <SelectTrigger
+            aria-label="Project"
+            className="h-7 bg-background pl-7 text-xs [&>span]:truncate"
+          >
+            <SelectValue
+              placeholder={
+                isLoading
+                  ? "Loading…"
+                  : current === null
+                    ? "Choose a project…"
+                    : "Select project"
+              }
+            />
+          </SelectTrigger>
+          <SelectContent>
+            {current !== null && !knownProject ? (
+              <SelectItem value={selectedProjectId}>
+                {current.label}
+              </SelectItem>
+            ) : null}
+            {groups.map((group) => (
+              <SelectItem key={group.projectId} value={group.projectId}>
+                {group.projectName}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </PickerField>
 
-      <Field
+      <PickerField
         icon={current?.environmentId === null ? "Folder" : "GitBranch"}
         label="Workspace"
+        title="Workspace"
       >
-        <select
-          value={current === null ? "" : keyOf(current.ref)}
-          aria-label="Workspace"
+        <Select
+          value={current === null ? undefined : keyOf(current.ref)}
           disabled={isLoading || current === null}
-          onChange={(event) => {
-            const parsed = parseKey(event.target.value);
+          onValueChange={(value) => {
+            const parsed = parseKey(value);
             if (parsed !== null) onSelect(parsed);
           }}
-          className={selectClass}
         >
-          {current === null ? <option value="">—</option> : null}
-          {current !== null && !listedHere ? (
-            <option value={keyOf(current.ref)}>{current.sublabel}</option>
-          ) : null}
-          {(activeGroup?.options ?? []).map((option) => (
-            <option key={keyOf(option.ref)} value={keyOf(option.ref)}>
-              {option.sublabel}
-            </option>
-          ))}
-        </select>
-      </Field>
+          <SelectTrigger
+            aria-label="Workspace"
+            className="h-7 bg-background pl-7 text-xs [&>span]:truncate"
+          >
+            <SelectValue placeholder={current === null ? "—" : "Select workspace"} />
+          </SelectTrigger>
+          <SelectContent>
+            {current !== null && !listedHere ? (
+              <SelectItem value={keyOf(current.ref)}>
+                {current.sublabel}
+              </SelectItem>
+            ) : null}
+            {(activeGroup?.options ?? []).map((option) => (
+              <SelectItem key={keyOf(option.ref)} value={keyOf(option.ref)}>
+                {option.sublabel}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </PickerField>
     </div>
   );
 }
 
-const selectClass = cn(
-  "h-7 w-full min-w-0 cursor-pointer appearance-none rounded-md border border-border",
-  "bg-background pr-6 pl-7 text-xs text-foreground",
-  "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
-  "disabled:cursor-default disabled:text-muted-foreground",
-);
-
-function Field({
+function PickerField({
   icon,
-  label,
+  title,
   children,
 }: {
   icon: "Folder" | "GitBranch";
   label: string;
+  title: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="relative flex min-w-0 items-center" title={label}>
+    <div className="relative flex min-w-0 items-center" title={title}>
       <Icon
         name={icon}
         aria-hidden
-        className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground"
+        className="pointer-events-none absolute left-2 z-10 size-3.5 text-muted-foreground"
       />
-      {children}
-      <Icon
-        name="ChevronDown"
-        aria-hidden
-        className="pointer-events-none absolute right-1.5 size-3 text-muted-foreground"
-      />
+      <div className="min-w-0 flex-1">{children}</div>
     </div>
   );
 }

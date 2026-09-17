@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/ui/icon";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import {
   ancestorsOf,
@@ -114,9 +115,9 @@ export function Explorer({
           <Icon
             name="Search"
             aria-hidden
-            className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground"
+            className="pointer-events-none absolute top-1/2 left-2 z-10 size-3.5 -translate-y-1/2 text-muted-foreground"
           />
-          <input
+          <Input
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -129,12 +130,7 @@ export function Explorer({
             placeholder="Search files"
             aria-label="Search files"
             spellCheck={false}
-            className={cn(
-              "h-7 w-full min-w-0 rounded-md border border-border bg-background pr-2 pl-7 text-sm",
-              "text-foreground placeholder:text-muted-foreground",
-              "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
-              "[&::-webkit-search-cancel-button]:hidden",
-            )}
+            className="h-7 bg-background pr-2 pl-7 text-xs [&::-webkit-search-cancel-button]:hidden"
           />
         </div>
         <ExplorerAction

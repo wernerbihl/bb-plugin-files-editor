@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Icon } from "@/components/ui/icon";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 export interface FindBarProps {
@@ -57,9 +58,9 @@ export function FindBar({
         <Icon
           name="Search"
           aria-hidden
-          className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground"
+          className="pointer-events-none absolute left-2 z-10 size-3.5 text-muted-foreground"
         />
-        <input
+        <Input
           ref={inputRef}
           value={query}
           type="text"
@@ -84,11 +85,7 @@ export function FindBar({
               onClose();
             }
           }}
-          className={cn(
-            "h-7 w-full min-w-0 rounded-md border border-border bg-background",
-            "pr-2 pl-7 text-xs text-foreground placeholder:text-muted-foreground",
-            "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
-          )}
+          className="h-7 bg-background pr-2 pl-7 text-xs"
         />
       </div>
 
@@ -99,11 +96,10 @@ export function FindBar({
         title="Match case"
         onClick={() => onCaseSensitiveChange(!caseSensitive)}
         className={cn(
-          "h-6 w-6 shrink-0 cursor-pointer rounded font-mono text-[11px] leading-none",
+          "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md font-mono text-[11px] leading-none transition-colors",
+          "text-muted-foreground hover:bg-state-hover hover:text-foreground",
           "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
-          caseSensitive
-            ? "bg-foreground/10 text-foreground"
-            : "text-muted-foreground hover:bg-foreground/5",
+          caseSensitive && "bg-state-active text-foreground",
         )}
       >
         Aa
@@ -152,8 +148,8 @@ function StepButton({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded",
-        "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
+        "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md",
+        "text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground",
         "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
         "disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent",
       )}
