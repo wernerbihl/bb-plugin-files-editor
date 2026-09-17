@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { experimental_SourceCode as SourceCode } from "@get-bb/plugin-sdk/app";
+import {
+  experimental_SourceCode as SourceCode,
+  experimental_useCodeTheme,
+  type PluginCodeThemeData,
+} from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { formatBytes, languageLabel } from "@/lib/file-kind";
 import { findMatches, matchIndexAt, stepMatch } from "@/lib/find";
 import { FindBar } from "./FindBar";
+import {
+  getEditHighlighter,
+  highlightToNodes,
+  isHighlightableSize,
+  shikiLangForPath,
+} from "./edit-highlight";
 import type { FileTab } from "./use-file-tabs";
 
 export interface FileViewProps {
@@ -297,6 +307,12 @@ function TextFileView({
  * A plain textarea with a matching gutter. BB's own source viewer owns
  * highlighting for reading; editing only needs a caret, a monospace grid, and
  * line numbers that stay glued to it while it scrolls.
+ *
+ * The textarea's own text is transparent: a highlighted backdrop behind it
+ * paints the tokens, so Edit keeps the colors Read shows. Both layers share
+ * font, size, line height, padding and wrapping, and the backdrop follows the
+ * textarea's scroll. When there is no grammar or theme (or the file is huge),
+ * the backdrop is absent and the textarea paints its own text.
  */
 function CodeEditor({
   path,
@@ -315,6 +331,31 @@ function CodeEditor({
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const gutterRef = useRef<HTMLPreElement | null>(null);
+  const backdropRef = useRef<HTMLPreElement | null>(null);
+  const theme = useEditCodeTheme();
+
+  /** The textarea owns scrolling; the gutter and backdrop follow it. */
+  const syncScroll = (source: HTMLTextAreaElement) => {
+    if (gutterRef.current !== null) {
+      gutterRef.current.scrollTop = source.scrollTop;
+    }
+    if (backdropRef.current !== null) {
+      backdropRef.current.scrollTop = source.scrollTop;
+      backdropRef.current.scrollLeft = source.scrollLeft;
+    }
+  };
+
+  const backdrop = useMemo(() => {
+    if (theme === null || !isHighlightableSize(value)) return null;
+    const lang = shikiLangForPath(path);
+    if (lang === null) return null;
+    const highlighter = getEditHighlighter(theme);
+    if (highlighter === null) return null;
+    return highlightToNodes(highlighter, value, lang, theme);
+  }, [path, theme, value]);
+
+  const caretColor =
+    theme?.colors["editorCursor.foreground"] ?? theme?.fg ?? "#ffffff";
 
   const lineCount = useMemo(() => value.split("\n").length, [value]);
   // One text node rather than one element per line: a 100k-line lock file would
@@ -341,9 +382,7 @@ function CodeEditor({
     const target =
       linesAbove * lineHeight - textarea.clientHeight / 2 + lineHeight;
     textarea.scrollTop = Math.max(0, target);
-    if (gutterRef.current !== null) {
-      gutterRef.current.scrollTop = textarea.scrollTop;
-    }
+    syncScroll(textarea);
     // `value` is read for the line count only; re-running on every keystroke
     // would fight the caret. The nonce is what makes a repeat hit re-apply.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -358,51 +397,86 @@ function CodeEditor({
       >
         {gutterText}
       </pre>
-      <textarea
-        ref={textareaRef}
-        value={value}
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-        aria-label={`Edit ${path}`}
-        onScroll={(event) => {
-          if (gutterRef.current !== null) {
-            gutterRef.current.scrollTop = event.currentTarget.scrollTop;
-          }
-        }}
-        onChange={(event) => {
-          onCaretChange(event.target.selectionStart);
-          onChange(event.target.value);
-        }}
-        onSelect={(event) => onCaretChange(event.currentTarget.selectionStart)}
-        onKeyDown={(event) => {
-          if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-            event.preventDefault();
-            // The workspace root handles ⌘S too; without this the keystroke
-            // bubbles and fires a second write against the same guard hash,
-            // which comes back as a conflict that never happened.
-            event.stopPropagation();
-            onSave();
-            return;
-          }
-          if (event.key === "Tab") {
-            event.preventDefault();
-            event.stopPropagation();
-            insertAtCaret(event.currentTarget, "  ", onChange);
-          }
-        }}
-        // No soft wrap: the gutter renders one row per logical line, so a
-        // wrapped line would make every number below it drift.
-        wrap="off"
-        className={cn(
-          "min-h-0 flex-1 resize-none bg-transparent py-3 pr-4 pl-3 text-foreground",
-          "overflow-auto whitespace-pre",
-          "focus-visible:outline-none",
-        )}
-      />
+      <div className="relative min-w-0 flex-1">
+        {backdrop !== null ? (
+          <pre
+            ref={backdropRef}
+            aria-hidden
+            // The highlighted layer: never interactive, never selectable —
+            // the caret, selection and scrolling all belong to the textarea.
+            // Same font, size, line height, padding and no-wrap as the
+            // textarea, so every glyph sits exactly behind its editable twin.
+            className="pointer-events-none absolute inset-0 overflow-hidden py-3 pr-4 pl-3 font-mono text-[13px] leading-5 whitespace-pre select-none"
+            style={{ color: theme?.fg }}
+          >
+            {backdrop}
+          </pre>
+        ) : null}
+        <textarea
+          ref={textareaRef}
+          value={value}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          aria-label={`Edit ${path}`}
+          onScroll={(event) => {
+            syncScroll(event.currentTarget);
+          }}
+          onChange={(event) => {
+            onCaretChange(event.target.selectionStart);
+            onChange(event.target.value);
+          }}
+          onSelect={(event) => onCaretChange(event.currentTarget.selectionStart)}
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+              event.preventDefault();
+              // The workspace root handles ⌘S too; without this the keystroke
+              // bubbles and fires a second write against the same guard hash,
+              // which comes back as a conflict that never happened.
+              event.stopPropagation();
+              onSave();
+              return;
+            }
+            if (event.key === "Tab") {
+              event.preventDefault();
+              event.stopPropagation();
+              insertAtCaret(event.currentTarget, "  ", onChange);
+            }
+          }}
+          // No soft wrap: the gutter renders one row per logical line, so a
+          // wrapped line would make every number below it drift.
+          wrap="off"
+          className={cn(
+            "absolute inset-0 h-full w-full resize-none bg-transparent py-3 pr-4 pl-3",
+            backdrop !== null ? "text-transparent" : "text-foreground",
+            "overflow-auto whitespace-pre",
+            "focus-visible:outline-none",
+            // Transparent text would leave selected text invisible on the
+            // selection wash; paint it in the theme foreground instead.
+            "selection:text-[var(--edit-fg)]",
+          )}
+          style={{ caretColor, "--edit-fg": theme?.fg } as React.CSSProperties}
+        />
+      </div>
     </div>
   );
 }
+
+/** BB's live code theme, or null on hosts that predate the hook. */
+function useEditCodeTheme(): PluginCodeThemeData | null {
+  const state = useCodeTheme();
+  return state.theme;
+}
+
+// The code-theme hook is experimental: read it through a module-level binding
+// so edit mode still mounts (as plain text) on hosts that do not provide it,
+// instead of crashing on an undefined import.
+const useCodeTheme: () => {
+  theme: PluginCodeThemeData | null;
+} =
+  typeof experimental_useCodeTheme === "function"
+    ? experimental_useCodeTheme
+    : () => ({ theme: null });
 
 function insertAtCaret(
   textarea: HTMLTextAreaElement,
