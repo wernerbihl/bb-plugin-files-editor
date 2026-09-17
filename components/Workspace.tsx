@@ -6,6 +6,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { Icon } from "@/components/ui/icon";
+import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import { cn, formatHomePathForDisplay } from "@/lib/utils";
 import type { FlatEntry } from "@/lib/tree";
 import type { ScopeRef } from "@/lib/route";
@@ -65,6 +66,9 @@ export function Workspace({
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const tabs = useFileTabs(scope);
+  // Small viewports (phones) cannot fit the tree beside the editor, so the
+  // two panes take turns at full width instead of squeezing side by side.
+  const isCompact = useIsCompactViewport();
 
   const [tree, setTree] = useState<TreeState>(EMPTY_TREE);
   const [includeHidden, setIncludeHidden] = useState(readStoredHidden);
@@ -162,10 +166,13 @@ export function Workspace({
     if (filePath === null) return;
     if (tabs.activePath === filePath || hasRoutedTab) return;
     tabs.open(filePath);
+    // On a phone the tree takes the full width, so a routed file (deep link,
+    // reload, scope change) has to dismiss it or the editor stays hidden.
+    if (isCompact) setIsExplorerOpen(false);
     // `tabs` is rebuilt every render; the open is keyed on the route value and
     // on whether this surface already holds that file.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filePath, hasRoutedTab, scopeId, scopeKind]);
+  }, [filePath, hasRoutedTab, isCompact, scopeId, scopeKind]);
 
   useRealtime("files-editor/changed", (payload) => {
     const change = payload as { scope?: ScopeRef; path?: string; sha256?: string };
@@ -183,16 +190,21 @@ export function Workspace({
       tabs.open(path);
       onOpenPath(path);
       setFindRequest(0);
-      // The explorer deliberately stays open: it used to collapse itself on the
-      // narrow panel to give the editor width, which meant the tree vanished
-      // under you every time you opened a file. Closing it is the toggle's job.
+      // The explorer deliberately stays open on desktop: it used to collapse
+      // itself on the narrow panel to give the editor width, which meant the
+      // tree vanished under you every time you opened a file. Closing it is
+      // the toggle's job.
+      //
+      // On a phone it takes the full width, so leaving it open would hide the
+      // file just opened — there the toggle brings it back instead.
+      if (isCompact) setIsExplorerOpen(false);
       //
       // The element that held focus is routinely the one the open destroys —
       // the empty state's button, or the previous file's textarea. Recover it,
       // or the root's ⌘P / ⌘S handlers stop receiving keys.
       requestAnimationFrame(restoreFocus);
     },
-    [onOpenPath, restoreFocus, tabs],
+    [isCompact, onOpenPath, restoreFocus, tabs],
   );
 
   const closeTab = useCallback(
@@ -374,8 +386,13 @@ export function Workspace({
       {isExplorerOpen ? (
         <>
           <div
-            style={{ width: explorerWidth }}
-            className="flex min-h-0 shrink-0 flex-col overflow-hidden"
+            style={isCompact ? undefined : { width: explorerWidth }}
+            className={cn(
+              "flex min-h-0 shrink-0 flex-col overflow-hidden",
+              // On a phone the tree takes the whole width and the editor hides
+              // behind it; side by side, neither pane would be usable.
+              isCompact && "w-full flex-1",
+            )}
           >
             <Explorer
               entries={tree.entries}
@@ -404,12 +421,22 @@ export function Workspace({
               setExplorerWidth(DEFAULT_EXPLORER_PX);
               storeWidth(DEFAULT_EXPLORER_PX);
             }}
-            className="w-px shrink-0 cursor-col-resize bg-border transition-colors hover:bg-ring"
+            // No drag handle on a phone: the tree is full-width there.
+            className={cn(
+              "w-px shrink-0 cursor-col-resize bg-border transition-colors hover:bg-ring",
+              isCompact && "hidden",
+            )}
           />
         </>
       ) : null}
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div
+        className={cn(
+          "flex min-h-0 min-w-0 flex-1 flex-col",
+          // The full-width tree on a phone covers the editor while open.
+          isCompact && isExplorerOpen && "hidden",
+        )}
+      >
         <EditorTabs
           tabs={tabs.tabs}
           activePath={tabs.activePath}
