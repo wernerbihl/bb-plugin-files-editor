@@ -7,14 +7,14 @@ find in file, and editable.
 
 ![The Files panel: project and worktree pickers over a file tree, tabs, find-in-file, and the open file](https://raw.githubusercontent.com/abdoutelb/bb-plugin-files-editor/main/docs/preview.png)
 
-*An illustration of the layout, not a screenshot — drawn from `docs/preview.html`
-with invented project data, so no real repository or thread titles appear in it.*
+_An illustration of the layout, not a screenshot — drawn from `docs/preview.html`
+with invented project data, so no real repository or thread titles appear in it._
 
 ## What it gives you
 
 - **A Files page** in the sidebar (`/plugins/files-editor/files`) with a
   workspace picker covering every project checkout and every thread worktree.
-- **A Files tab beside a thread** — right panel → new tab → *Project files*.
+- **A Files tab beside a thread** — right panel → new tab → _Project files_.
   Pinned to that thread's workspace, so it shows the files the agent in that
   conversation is editing.
 - **Two searches.** At the top of the tree, type to prune it to matching paths
@@ -31,7 +31,7 @@ with invented project data, so no real repository or thread titles appear in it.
 - **Edit and save.** A Read / Edit toggle switches the pane to an editor;
   <kbd>⌘S</kbd> writes. Saves are guarded by the hash the file had when you
   opened it, so if an agent edited it underneath you the save stops and offers
-  *Reload* or *Overwrite* rather than clobbering the change.
+  _Reload_ or _Overwrite_ rather than clobbering the change.
 - **Images render**, other binaries say so instead of dumping bytes.
 - **`bb files`** gives an agent the same listing from the CLI.
 
@@ -43,7 +43,7 @@ the app. For a workspace on the machine BB's server runs on, this plugin walks
 the directory itself and shows them; the eye toggle in the explorer turns them
 off.
 
-A workspace on a *connected* machine has to go through BB's listing, so dotfiles
+A workspace on a _connected_ machine has to go through BB's listing, so dotfiles
 are not available there and the toggle is hidden. The explorer says which mode
 it is in.
 
@@ -71,7 +71,7 @@ big enough to truncate a listing on their own. Remove one to browse it, or add
 ## Install
 
 ```sh
-bb plugin install git:https://github.com/abdoutelb/bb-plugin-files-editor.git@^0.1.2
+bb plugin install git:https://github.com/wernerbihl/bb-plugin-files-editor.git@^0.1.2
 ```
 
 That tracks the 0.x line, so `bb plugin outdated` and `bb plugin update` pick up
@@ -98,7 +98,7 @@ route encoding. `server.ts` is mostly wiring; the components are the view.
 
 - The local walk stops at 40,000 entries and BB's remote listing at 10,000, and
   the explorer mounts at most 600 rows at a time. The footer says when either
-  limit is in play; widening *Excluded directories* is the fix for a truncated
+  limit is in play; widening _Excluded directories_ is the fix for a truncated
   listing.
 - Every `bb files` command is capped by BB's 1 MB limit on a command's output.
   Past that it prints what fits — whole lines, for a listing — and says how much

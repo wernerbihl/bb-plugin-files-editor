@@ -1,5 +1,5 @@
 {
-  "name": "bb-plugin-files-editor",
+  "name": "wernerbihl-bb-plugin-files-editor",
   "version": "0.1.4",
   "description": "VS Code-style file explorer and editor for the project or worktree behind a thread: a searchable file tree, editor tabs, syntax-highlighted viewing, find in file, and edit with save.",
   "type": "module",
@@ -8,7 +8,7 @@
     "bbPluginSdk": ">=0.4.21"
   },
   "bb": {
-    "name": "Files",
+    "name": "WernerBihl Files",
     "description": "VS Code-style file explorer and editor for the project or worktree behind a thread: a searchable file tree, editor tabs, syntax-highlighted viewing, find in file, and edit with save.",
     "branding": {
       "icon": "./assets/icon.svg"
@@ -62,13 +62,13 @@
     "react-dom": "^19.0.0"
   },
   "license": "MIT",
-  "homepage": "https://github.com/abdoutelb/bb-plugin-files-editor#readme",
+  "homepage": "https://github.com/wernerbihl/bb-plugin-files-editor#readme",
   "bugs": {
-    "url": "https://github.com/abdoutelb/bb-plugin-files-editor/issues"
+    "url": "https://github.com/wernerbihl/bb-plugin-files-editor/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/abdoutelb/bb-plugin-files-editor.git"
+    "url": "git+https://github.com/wernerbihl/bb-plugin-files-editor.git"
   },
   "keywords": [
     "bb-plugin",
