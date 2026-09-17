@@ -83,10 +83,6 @@ export function Workspace({
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const requestRef = useRef(0);
-  // A toast action outlives the render that created it; navigation has to be
-  // read live rather than captured.
-  const onOpenPathRef = useRef(onOpenPath);
-  onOpenPathRef.current = onOpenPath;
   // Closing navigates away, but the route arrives back as a prop a render
   // later. In that gap the route still names the file that was just closed,
   // and the effect below would helpfully reopen it. This remembers the value
@@ -207,6 +203,23 @@ export function Workspace({
     [isCompact, onOpenPath, restoreFocus, tabs],
   );
 
+  /**
+   * Navigate after a close. When the last tab goes away on a phone, the
+   * full-width tree comes back too — otherwise the user lands on an empty
+   * editor with only the small toggle to get back to their files.
+   */
+  const closedTo = useCallback(
+    (next: string | null) => {
+      onOpenPath(next);
+      if (next === null && isCompact) setIsExplorerOpen(true);
+    },
+    [isCompact, onOpenPath],
+  );
+  // Toast actions fire many renders later, so they read the live callback
+  // through a ref instead of capturing the render's closure.
+  const closedToRef = useRef(closedTo);
+  closedToRef.current = closedTo;
+
   const closeTab = useCallback(
     (path: string) => {
       staleRouteFile.current = filePath;
@@ -218,14 +231,14 @@ export function Workspace({
             // Through the ref: the action can be clicked many renders later,
             // and the captured `onOpenPath` would navigate using the route as
             // it was when the X was clicked, not as it is now.
-            onClick: () => onOpenPathRef.current(tabs.close(path)),
+            onClick: () => closedToRef.current(tabs.close(path)),
           },
         });
         return;
       }
-      onOpenPath(tabs.close(path));
+      closedTo(tabs.close(path));
     },
-    [filePath, onOpenPath, tabs],
+    [closedTo, filePath, tabs],
   );
 
   /** Shared by "close others" and "close all": both can discard several drafts. */
@@ -241,15 +254,15 @@ export function Workspace({
           {
             action: {
               label: "Close anyway",
-              onClick: () => onOpenPathRef.current(run()),
+              onClick: () => closedToRef.current(run()),
             },
           },
         );
         return;
       }
-      onOpenPath(run());
+      closedTo(run());
     },
-    [filePath, onOpenPath],
+    [closedTo, filePath],
   );
 
   const closeOtherTabs = useCallback(
