@@ -30,6 +30,8 @@ export interface FileViewProps {
    */
   findRequest: number;
   onCloseFind: () => void;
+  /** Soft-wrap long lines instead of scrolling horizontally. */
+  wordWrap: boolean;
 }
 
 /** A range to select in the editor; `nonce` re-applies an unchanged range. */
@@ -48,6 +50,7 @@ export function FileView({
   onRetry,
   findRequest,
   onCloseFind,
+  wordWrap,
 }: FileViewProps) {
   const file = tab.file;
 
@@ -108,6 +111,7 @@ export function FileView({
       onOverwrite={onOverwrite}
       findRequest={findRequest}
       onCloseFind={onCloseFind}
+      wordWrap={wordWrap}
     />
   );
 }
@@ -126,6 +130,7 @@ function TextFileView({
   onOverwrite,
   findRequest,
   onCloseFind,
+  wordWrap,
 }: {
   tab: FileTab;
   content: string;
@@ -135,6 +140,7 @@ function TextFileView({
   onOverwrite: () => void;
   findRequest: number;
   onCloseFind: () => void;
+  wordWrap: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -271,6 +277,7 @@ function TextFileView({
           onChange={(next) => onChangeDraft(tab.path, next)}
           onSave={onSave}
           selection={selection}
+          wordWrap={wordWrap}
           onCaretChange={(position) => {
             caretRef.current = position;
           }}
@@ -287,7 +294,7 @@ function TextFileView({
         <SourceCode
           content={content}
           path={tab.path}
-          overflow="scroll"
+          overflow={wordWrap ? "wrap" : "scroll"}
           // The host viewer owns scroll-into-view, so highlighting the line is
           // also what reveals it.
           highlightedLines={
@@ -320,6 +327,7 @@ function CodeEditor({
   onChange,
   onSave,
   selection,
+  wordWrap,
   onCaretChange,
 }: {
   path: string;
@@ -327,6 +335,7 @@ function CodeEditor({
   onChange: (next: string) => void;
   onSave: () => void;
   selection: EditorSelection | null;
+  wordWrap: boolean;
   onCaretChange: (position: number) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -404,9 +413,13 @@ function CodeEditor({
             aria-hidden
             // The highlighted layer: never interactive, never selectable —
             // the caret, selection and scrolling all belong to the textarea.
-            // Same font, size, line height, padding and no-wrap as the
-            // textarea, so every glyph sits exactly behind its editable twin.
-            className="pointer-events-none absolute inset-0 overflow-hidden py-3 pr-4 pl-3 font-mono text-[13px] leading-5 whitespace-pre select-none"
+            // Same font, size, line height and padding as the textarea; its
+            // wrapping follows the toggle, so every glyph sits exactly behind
+            // its editable twin.
+            className={cn(
+              "pointer-events-none absolute inset-0 overflow-hidden py-3 pr-4 pl-3 font-mono text-[13px] leading-5 select-none",
+              wordWrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
+            )}
             style={{ color: theme?.fg }}
           >
             {backdrop}
@@ -443,13 +456,14 @@ function CodeEditor({
               insertAtCaret(event.currentTarget, "  ", onChange);
             }
           }}
-          // No soft wrap: the gutter renders one row per logical line, so a
-          // wrapped line would make every number below it drift.
-          wrap="off"
+          // Soft wrap is a phone affordance: the gutter renders one row per
+          // logical line, so a wrapped line makes every number below it
+          // drift. Off by default; the toolbar toggle opts in.
+          wrap={wordWrap ? "soft" : "off"}
           className={cn(
             "absolute inset-0 h-full w-full resize-none bg-transparent py-3 pr-4 pl-3",
             backdrop !== null ? "text-transparent" : "text-foreground",
-            "overflow-auto whitespace-pre",
+            wordWrap ? "overflow-y-auto whitespace-pre-wrap break-words" : "overflow-auto whitespace-pre",
             "focus-visible:outline-none",
             // Transparent text would leave selected text invisible on the
             // selection wash; paint it in the theme foreground instead.

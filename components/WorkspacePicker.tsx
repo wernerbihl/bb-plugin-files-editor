@@ -82,7 +82,7 @@ export function WorkspacePicker({
         >
           <SelectTrigger
             aria-label="Project"
-            className="h-7 bg-background pl-7 text-xs [&>span]:truncate"
+            className="h-7 bg-background py-1 pl-7 text-xs max-md:pointer-coarse:h-10 max-md:pointer-coarse:text-base [&>span]:truncate"
           >
             <SelectValue
               placeholder={
@@ -124,7 +124,7 @@ export function WorkspacePicker({
         >
           <SelectTrigger
             aria-label="Workspace"
-            className="h-7 bg-background pl-7 text-xs [&>span]:truncate"
+            className="h-7 bg-background py-1 pl-7 text-xs max-md:pointer-coarse:h-10 max-md:pointer-coarse:text-base [&>span]:truncate"
           >
             <SelectValue placeholder={current === null ? "—" : "Select workspace"} />
           </SelectTrigger>

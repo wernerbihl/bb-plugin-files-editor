@@ -80,6 +80,10 @@ export function Workspace({
   // A counter, not a flag: pressing ⌘F again with the bar already open has to
   // re-focus and reselect the field, which an unchanged boolean cannot signal.
   const [findRequest, setFindRequest] = useState(0);
+  // Soft wrap for long lines. Off by default to preserve the current scroll
+  // behavior; on phones the toolbar offers it in place of the external-preview
+  // button, where horizontal scrolling is the worse trade.
+  const [wordWrap, setWordWrap] = useState(false);
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const requestRef = useRef(0);
@@ -515,9 +519,22 @@ export function Workspace({
               </>
             ) : null}
             {activeTab !== null && resolved !== null ? (
-              <ToolbarButton
-                icon="ExternalLink"
-                label="Open in BB's file preview"
+              // On a phone the preview panel has no room to share, so the
+              // external-open button becomes a word-wrap toggle for text files.
+              isCompact ? (
+                activeTab.file?.kind === "text" ? (
+                  <ToolbarButton
+                    icon="TextWrap"
+                    label={wordWrap ? "Don't wrap long lines" : "Wrap long lines"}
+                    isActive={wordWrap}
+                    isPressed={wordWrap}
+                    onClick={() => setWordWrap((wrap) => !wrap)}
+                  />
+                ) : null
+              ) : (
+                <ToolbarButton
+                  icon="ExternalLink"
+                  label="Open in BB's file preview"
                 onClick={() => {
                   const opened = navigate.experimental_openFilePreview({
                     target:
@@ -539,6 +556,7 @@ export function Workspace({
                   }
                 }}
               />
+              )
             ) : null}
           </div>
         </div>
@@ -561,6 +579,7 @@ export function Workspace({
             onOverwrite={tabs.overwrite}
             onRetry={tabs.retry}
             findRequest={findRequest}
+            wordWrap={wordWrap}
             onCloseFind={() => {
               setFindRequest(0);
               restoreFocus();
@@ -769,6 +788,7 @@ function ToolbarButton({
   isActive,
   isDisabled,
   isSpinning,
+  isPressed,
 }: {
   icon: React.ComponentProps<typeof Icon>["name"];
   label: string;
@@ -776,6 +796,7 @@ function ToolbarButton({
   isActive?: boolean;
   isDisabled?: boolean;
   isSpinning?: boolean;
+  isPressed?: boolean;
 }) {
   return (
     <button
@@ -783,6 +804,7 @@ function ToolbarButton({
       onClick={onClick}
       disabled={isDisabled}
       aria-label={label}
+      aria-pressed={isPressed}
       title={label}
       className={cn(
         "flex size-7 shrink-0 items-center justify-center rounded-md",
