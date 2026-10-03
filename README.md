@@ -1,9 +1,9 @@
 # bb-plugin-files-editor
 
-A VS Code-style file explorer and editor for the workspace behind a bb thread,
-laid out the way an editor is: a searchable file tree on the left, editor tabs
-across the top, and the whole file in the middle — syntax highlighted, with
-find in file, and editable.
+A responsive VS Code-style workbench for the project checkout or worktree
+behind a bb thread. Desktop has an activity rail, Explorer and Source Control
+views, editor tabs, and a status bar. Phones switch between full-screen
+Explorer, Editor, and Source Control destinations from a bottom bar.
 
 ![The Files panel: project and worktree pickers over a file tree, tabs, find-in-file, and the open file](https://raw.githubusercontent.com/abdoutelb/bb-plugin-files-editor/main/docs/preview.png)
 
@@ -17,6 +17,24 @@ with invented project data, so no real repository or thread titles appear in it.
 - **A Files tab beside a thread** — right panel → new tab → _Project files_.
   Pinned to that thread's workspace, so it shows the files the agent in that
   conversation is editing.
+- **A persistent Explorer.** File and language icons appear in the tree and
+  tabs. Expanded folders and scroll position are saved per workspace; closing
+  the last editor tab returns to the tree at its previous location.
+- **Source Control across the selected workspace.** Every Git root, nested
+  repository, submodule, and worktree is grouped separately. Review staged,
+  unstaged, untracked, and committed branch changes; open individual diffs or
+  an _All Changes_ editor tab. Stage whole files everywhere and individual
+  hunks on desktop.
+- **Per-repository Git actions.** Generate an editable commit subject from the
+  staged diff with BB's configured AI service, commit only staged files, and
+  push explicitly to the upstream. If there is no upstream, choose a configured
+  remote and branch. Unsaved drafts prompt to save, discard, or cancel before
+  staging or committing their file.
+- **GitHub pull requests.** With the BB GitHub plugin installed and authenticated,
+  view PR status, draft editable title and body text from the committed branch
+  diff, create a ready-for-review PR by default, and confirm a merge method
+  enabled by the repository. BB's experimental text-completion API is required
+  for AI suggestions; manual commit and PR text remains available without it.
 - **Two searches.** At the top of the tree, type to prune it to matching paths
   with every directory above them opened; <kbd>⌘P</kbd> opens the ranked
   go-to-file palette instead. Inside a file, the magnifier in the toolbar (or
@@ -32,6 +50,8 @@ with invented project data, so no real repository or thread titles appear in it.
   <kbd>⌘S</kbd> writes. Saves are guarded by the hash the file had when you
   opened it, so if an agent edited it underneath you the save stops and offers
   _Reload_ or _Overwrite_ rather than clobbering the change.
+- **Mobile navigation.** Explorer, Editor, and Source Control each get the full
+  screen, and their state is retained as you switch destinations.
 - **Images render**, other binaries say so instead of dumping bytes.
 - **`bb files`** gives an agent the same listing from the CLI.
 
@@ -71,7 +91,7 @@ big enough to truncate a listing on their own. Remove one to browse it, or add
 ## Install
 
 ```sh
-bb plugin install git:https://github.com/wernerbihl/bb-plugin-files-editor.git@^0.1.2
+bb plugin install git:https://github.com/wernerbihl/bb-plugin-files-editor.git@^0.2.0
 ```
 
 That tracks the 0.x line, so `bb plugin outdated` and `bb plugin update` pick up
@@ -111,4 +131,8 @@ route encoding. `server.ts` is mostly wiring; the components are the view.
 - Reading, a find hit highlights its whole line, because line ranges are what
   BB's source viewer accepts. Editing selects the exact match.
 - Files over 4 MB open read-only.
+- Git operations run on the machine that owns the selected workspace and require
+  Git to be installed there. GitHub PR controls require the BB GitHub plugin's
+  existing `gh` authentication. AI draft generation requires Plugin SDK 0.6.17 or later
+  with `sdk.system.experimental_completeText`; that API is experimental.
 - The tree does not create, rename, or delete files.

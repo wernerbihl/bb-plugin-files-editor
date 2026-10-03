@@ -17,6 +17,7 @@ import {
   walkDirectory,
 } from "./lib/walk.js";
 import { clipForCli, clipLinesForCli } from "./lib/cli-output.js";
+import { gitHostContract } from "./git-host-contract.js";
 
 /** BB's own recursive listing is capped at 10k; the local walk gets more room. */
 const LOCAL_ENTRY_LIMIT = 40_000;
@@ -55,6 +56,109 @@ const entrySchema = z.object({
   path: z.string(),
   kind: z.enum(["file", "directory"]),
 });
+
+const gitRepositoryStatusSchema = z
+  .object({
+    repoPath: z.string(),
+    branch: z.string().nullable(),
+    upstream: z.string().nullable(),
+    ahead: z.number().int().nonnegative(),
+    behind: z.number().int().nonnegative(),
+    defaultBranch: z.string().nullable(),
+    baseBranch: z.string().nullable(),
+    isDefaultBranch: z.boolean(),
+    remotes: z.array(z.object({ name: z.string(), url: z.string() }).strict()),
+    changes: z.array(
+      z
+        .object({
+          path: z.string(),
+          previousPath: z.string().nullable(),
+          status: z.string(),
+          staged: z.boolean(),
+          unstaged: z.boolean(),
+          untracked: z.boolean(),
+        })
+        .strict(),
+    ),
+    branchChanges: z.array(
+      z.object({ path: z.string(), status: z.string() }).strict(),
+    ),
+  })
+  .strict();
+export type GitRepositoryStatus = z.infer<typeof gitRepositoryStatusSchema>;
+
+const aiDraftResponseSchema = z.discriminatedUnion("ok", [
+  z
+    .object({
+      ok: z.literal(true),
+      text: z.string(),
+      pluginId: z.string(),
+      serviceId: z.string(),
+      displayName: z.string(),
+    })
+    .strict(),
+  z
+    .object({ ok: z.literal(false), message: z.string().min(1) })
+    .strict(),
+]);
+
+const pullDraftResponseSchema = z.discriminatedUnion("ok", [
+  z
+    .object({
+      ok: z.literal(true),
+      title: z.string(),
+      body: z.string(),
+      pluginId: z.string(),
+      serviceId: z.string(),
+      displayName: z.string(),
+    })
+    .strict(),
+  z
+    .object({ ok: z.literal(false), message: z.string().min(1) })
+    .strict(),
+]);
+
+const githubRepositoryInfoResponseSchema = z
+  .object({
+    defaultBranch: z.string().min(1),
+    mergeMethods: z.array(z.enum(["merge", "squash", "rebase"])),
+    url: z.string().url(),
+  })
+  .strict();
+
+const githubPullNumberResponseSchema = z
+  .object({ number: z.number().int().positive().nullable() })
+  .strict();
+
+const githubPullResponseSchema = z.object({
+  pull: z
+    .object({
+      number: z.number().int().positive(),
+      title: z.string(),
+      state: z.string(),
+      url: z.string(),
+      baseRefName: z.string(),
+      headRefName: z.string(),
+      reviewDecision: z.string(),
+      mergeStateStatus: z.string(),
+      checks: z.array(
+        z
+          .object({
+            name: z.string(),
+            status: z.enum(["success", "failure", "pending", "neutral"]),
+            url: z.string(),
+          })
+          .strict(),
+      ),
+    })
+    .passthrough(),
+});
+
+const githubCreatePullResponseSchema = z
+  .object({ number: z.number().int().positive(), url: z.string().url() })
+  .strict();
+
+const githubOkResponseSchema = z.object({ ok: z.literal(true) }).strict();
 
 const resolvedScopeSchema = z.object({
   root: z.string(),
@@ -153,6 +257,173 @@ export const rpcContract = defineRpcContract({
       }),
     ]),
   },
+  sourceControl: {
+    input: z.object({ scope: scopeSchema }).strict(),
+    output: z
+      .object({
+        repos: z.array(gitRepositoryStatusSchema),
+        truncated: z.boolean(),
+        excluded: z.array(z.string()),
+      })
+      .strict(),
+  },
+  gitDiff: {
+    input: z
+      .object({ scope: scopeSchema, repoPath: z.string(), path: z.string().min(1) })
+      .strict(),
+    output: z
+      .object({
+        staged: z.string(),
+        unstaged: z.string(),
+        branch: z.string(),
+        truncated: z.boolean(),
+      })
+      .strict(),
+  },
+  stageFile: {
+    input: z
+      .object({
+        scope: scopeSchema,
+        repoPath: z.string(),
+        path: z.string().min(1),
+        stage: z.boolean(),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  stageAll: {
+    input: z.object({ scope: scopeSchema, repoPath: z.string() }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  stageHunks: {
+    input: z
+      .object({
+        scope: scopeSchema,
+        repoPath: z.string(),
+        path: z.string().min(1),
+        kind: z.enum(["staged", "unstaged"]),
+        hunkIndexes: z.array(z.number().int().nonnegative()).min(1).max(200),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  suggestCommitMessage: {
+    input: z.object({ scope: scopeSchema, repoPath: z.string() }).strict(),
+    output: aiDraftResponseSchema,
+  },
+  suggestPullRequest: {
+    input: z.object({ scope: scopeSchema, repoPath: z.string() }).strict(),
+    output: pullDraftResponseSchema,
+  },
+  commit: {
+    input: z
+      .object({
+        scope: scopeSchema,
+        repoPath: z.string(),
+        message: z.string().trim().min(1).max(5_000),
+      })
+      .strict(),
+    output: z
+      .object({ ok: z.literal(true), hash: z.string(), subject: z.string() })
+      .strict(),
+  },
+  push: {
+    input: z
+      .object({
+        scope: scopeSchema,
+        repoPath: z.string(),
+        remote: z.string().min(1).nullable(),
+        branch: z.string().min(1).nullable(),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  createBranch: {
+    input: z
+      .object({
+        scope: scopeSchema,
+        repoPath: z.string(),
+        branch: z.string().trim().min(1).max(200),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true), branch: z.string() }).strict(),
+  },
+  githubRepository: {
+    input: z.object({ scope: scopeSchema, repoPath: z.string() }).strict(),
+    output: z.discriminatedUnion("ok", [
+      z
+        .object({
+          ok: z.literal(true),
+          repo: z.string(),
+          defaultBranch: z.string(),
+          mergeMethods: z.array(z.enum(["merge", "squash", "rebase"])),
+          url: z.string(),
+        })
+        .strict(),
+      z.object({ ok: z.literal(false), message: z.string() }).strict(),
+    ]),
+  },
+  pullRequest: {
+    input: z.object({ scope: scopeSchema, repoPath: z.string() }).strict(),
+    output: z.discriminatedUnion("ok", [
+      z
+        .object({
+          ok: z.literal(true),
+          pull: z
+            .object({
+              number: z.number().int().positive(),
+              title: z.string(),
+              state: z.string(),
+              isDraft: z.boolean(),
+              mergeMethods: z.array(z.enum(["merge", "squash", "rebase"])),
+              url: z.string(),
+              baseRefName: z.string(),
+              headRefName: z.string(),
+              reviewDecision: z.string(),
+              mergeStateStatus: z.string(),
+              checks: z.array(
+                z
+                  .object({
+                    name: z.string(),
+                    status: z.enum(["success", "failure", "pending", "neutral"]),
+                    url: z.string(),
+                  })
+                  .strict(),
+              ),
+            })
+            .strict()
+            .nullable(),
+        })
+        .strict(),
+      z.object({ ok: z.literal(false), message: z.string() }).strict(),
+    ]),
+  },
+  createPullRequest: {
+    input: z
+      .object({
+        scope: scopeSchema,
+        repoPath: z.string(),
+        title: z.string().trim().min(1).max(256),
+        body: z.string().max(50_000),
+        base: z.string().min(1),
+        draft: z.boolean(),
+      })
+      .strict(),
+    output: z
+      .object({ ok: z.literal(true), number: z.number().int().positive(), url: z.string() })
+      .strict(),
+  },
+  mergePullRequest: {
+    input: z
+      .object({
+        scope: scopeSchema,
+        repoPath: z.string(),
+        number: z.number().int().positive(),
+        method: z.enum(["merge", "squash", "rebase"]),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
 });
 
 /** A browsable directory: what a scope reference turns into. */
@@ -160,6 +431,7 @@ export type ResolvedScope = z.infer<typeof resolvedScopeSchema>;
 export type WorkspaceOption = z.infer<typeof workspaceSchema>;
 
 export default function plugin(bb: BbPluginApi) {
+  const gitHost = bb.hosts.experimental_client({ contract: gitHostContract });
   const settings = bb.settings.define({
     excludedDirectories: {
       type: "string",
@@ -172,6 +444,37 @@ export default function plugin(bb: BbPluginApi) {
   async function excludedNames(): Promise<Set<string>> {
     const { excludedDirectories } = await settings.get();
     return parseExcludedNames(excludedDirectories);
+  }
+
+  async function gitTarget(scope: Scope, repoPath: string) {
+    const resolved = await resolveScope(scope);
+    if (!resolved.ok) throw new Error(resolved.reason);
+    return {
+      root: resolved.scope.root,
+      hostId: resolved.scope.hostId,
+      repoPath,
+    };
+  }
+
+  async function githubRepository(
+    scope: Scope,
+    repoPath: string,
+    signal?: AbortSignal,
+  ) {
+    const target = await gitTarget(scope, repoPath);
+    const status = await gitHost.call(
+      "status",
+      { root: target.root, repoPath: target.repoPath },
+      { hostId: target.hostId, signal },
+    );
+    const urls = status.remotes
+      .map((remote) => remote.url)
+      .filter((url) => url.includes("github.com"));
+    for (const url of urls) {
+      const repo = parseGithubRemote(url);
+      if (repo !== null) return { repo, status, target };
+    }
+    throw new Error("This repository has no GitHub remote.");
   }
 
   let cachedLocalHostId: string | null = null;
@@ -540,6 +843,298 @@ export default function plugin(bb: BbPluginApi) {
         sizeBytes: result.sizeBytes,
       };
     },
+    async sourceControl({ scope }) {
+      const resolved = await resolveScope(scope);
+      if (!resolved.ok) throw new Error(resolved.reason);
+      const excluded = [...(await excludedNames())];
+      const discovery = await gitHost.call(
+        "discoverRepositories",
+        { root: resolved.scope.root, excludedNames: excluded },
+        {
+          hostId: resolved.scope.hostId,
+          timeoutMs: 120_000,
+        },
+      );
+      let failed = false;
+      const snapshots = await mapWithConcurrency(
+        discovery.repoPaths,
+        8,
+        async (repoPath) => {
+          try {
+            return await gitHost.call(
+              "status",
+              { root: resolved.scope.root, repoPath },
+              {
+                hostId: resolved.scope.hostId,
+                timeoutMs: 60_000,
+              },
+            );
+          } catch {
+            failed = true;
+            return null;
+          }
+        },
+      );
+      return {
+        repos: snapshots.filter((snapshot) => snapshot !== null),
+        truncated: discovery.truncated || failed,
+        excluded: excluded.sort(),
+      };
+    },
+    async gitDiff({ scope, repoPath, path: filePath }) {
+      const target = await gitTarget(scope, repoPath);
+      return gitHost.call(
+        "diff",
+        { root: target.root, repoPath: target.repoPath, path: filePath },
+        { hostId: target.hostId, timeoutMs: 60_000 },
+      );
+    },
+    async stageFile({ scope, repoPath, path: filePath, stage }) {
+      const target = await gitTarget(scope, repoPath);
+      return gitHost.call(
+        "stageFile",
+        { root: target.root, repoPath: target.repoPath, path: filePath, stage },
+        { hostId: target.hostId, timeoutMs: 60_000 },
+      );
+    },
+    async stageAll({ scope, repoPath }) {
+      const target = await gitTarget(scope, repoPath);
+      return gitHost.call("stageAll", {
+        root: target.root,
+        repoPath: target.repoPath,
+      }, {
+        hostId: target.hostId,
+        timeoutMs: 60_000,
+      });
+    },
+    async stageHunks({ scope, repoPath, path: filePath, kind, hunkIndexes }) {
+      const target = await gitTarget(scope, repoPath);
+      return gitHost.call(
+        "stageHunks",
+        {
+          root: target.root,
+          repoPath: target.repoPath,
+          path: filePath,
+          kind,
+          hunkIndexes,
+        },
+        { hostId: target.hostId, timeoutMs: 60_000 },
+      );
+    },
+    async suggestCommitMessage({ scope, repoPath }) {
+      const target = await gitTarget(scope, repoPath);
+      const diff = await gitHost.call(
+        "context",
+        { root: target.root, repoPath: target.repoPath, kind: "staged" },
+        { hostId: target.hostId, timeoutMs: 60_000 },
+      );
+      if (diff.text.trim() === "") {
+        return aiFailure("Stage changes before generating a commit message.");
+      }
+      const completion = await bb.sdk.system.experimental_completeText({
+        task: "commit-message",
+        prompt:
+          "Write one concise imperative commit subject, no more than 72 characters. Return only the subject line.\n\nStaged diff:\n" +
+          diff.text,
+      });
+      if (!completion.ok) return aiFailure(completion.message);
+      return {
+        ok: true as const,
+        text: completion.text.split(/\r?\n/u)[0]!.trim(),
+        pluginId: completion.pluginId,
+        serviceId: completion.serviceId,
+        displayName: completion.displayName,
+      };
+    },
+    async suggestPullRequest({ scope, repoPath }) {
+      const target = await gitTarget(scope, repoPath);
+      const diff = await gitHost.call(
+        "context",
+        { root: target.root, repoPath: target.repoPath, kind: "branch" },
+        { hostId: target.hostId, timeoutMs: 120_000 },
+      );
+      if (diff.text.trim() === "") {
+        return aiFailure("Add branch changes before generating a pull request draft.");
+      }
+      const completion = await bb.sdk.system.experimental_completeText({
+        task: "commit-message",
+        prompt:
+          "Draft a pull request title and body from this committed branch diff. Return only a JSON object with string fields `title` and `body`. Keep the title concise and write a useful Markdown summary. Do not claim checks or tests were run unless the diff explicitly records that; otherwise say testing was not run.\n\nBranch diff:\n" +
+          diff.text,
+      });
+      if (!completion.ok) return aiFailure(completion.message);
+      try {
+        const candidate = completion.text
+          .replace(/^```(?:json)?\s*/iu, "")
+          .replace(/\s*```$/u, "")
+          .trim();
+        const value = JSON.parse(candidate) as { title?: unknown; body?: unknown };
+        if (typeof value.title !== "string" || typeof value.body !== "string") {
+          throw new Error("Missing title or body");
+        }
+        return {
+          ok: true as const,
+          title: value.title.trim().slice(0, 256),
+          body: value.body.trim().slice(0, 50_000),
+          pluginId: completion.pluginId,
+          serviceId: completion.serviceId,
+          displayName: completion.displayName,
+        };
+      } catch {
+        return aiFailure("The AI reply did not contain a readable pull request draft.");
+      }
+    },
+    async commit({ scope, repoPath, message }) {
+      const target = await gitTarget(scope, repoPath);
+      return gitHost.call(
+        "commit",
+        { root: target.root, repoPath: target.repoPath, message },
+        { hostId: target.hostId, timeoutMs: 120_000 },
+      );
+    },
+    async push({ scope, repoPath, remote, branch }) {
+      const target = await gitTarget(scope, repoPath);
+      return gitHost.call(
+        "push",
+        { root: target.root, repoPath: target.repoPath, remote, branch },
+        { hostId: target.hostId, timeoutMs: 180_000 },
+      );
+    },
+    async createBranch({ scope, repoPath, branch }) {
+      const target = await gitTarget(scope, repoPath);
+      const result = await gitHost.call(
+        "createBranch",
+        { root: target.root, repoPath: target.repoPath, branch },
+        { hostId: target.hostId, timeoutMs: 60_000 },
+      );
+      return result;
+    },
+    async githubRepository({ scope, repoPath }) {
+      try {
+        const { repo } = await githubRepository(scope, repoPath);
+        const info = await bb.sdk.plugins.callRpc({
+          pluginId: "github",
+          method: "repositoryInfo",
+          input: { repo },
+          outputSchema: githubRepositoryInfoResponseSchema,
+        });
+        return { ok: true as const, repo, ...info };
+      } catch (error) {
+        return {
+          ok: false as const,
+          message: describe(error),
+        };
+      }
+    },
+    async pullRequest({ scope, repoPath }) {
+      try {
+        const { repo, status } = await githubRepository(
+          scope,
+          repoPath,
+        );
+        if (status.branch === null) {
+          return { ok: true as const, pull: null };
+        }
+        const found = await bb.sdk.plugins.callRpc({
+          pluginId: "github",
+          method: "findPullRequest",
+          input: { repo, head: status.branch },
+          outputSchema: githubPullNumberResponseSchema,
+        });
+        if (found.number === null) return { ok: true as const, pull: null };
+        const repositoryInfo = await bb.sdk.plugins.callRpc({
+          pluginId: "github",
+          method: "repositoryInfo",
+          input: { repo },
+          outputSchema: githubRepositoryInfoResponseSchema,
+        });
+        const result = await bb.sdk.plugins.callRpc({
+          pluginId: "github",
+          method: "getPull",
+          input: { repo, number: found.number },
+          outputSchema: githubPullResponseSchema,
+        });
+        return {
+          ok: true as const,
+          pull: {
+            number: result.pull.number,
+            title: result.pull.title,
+            state: result.pull.state,
+            isDraft: result.pull.state === "DRAFT",
+            mergeMethods: repositoryInfo.mergeMethods,
+            url: result.pull.url,
+            baseRefName: result.pull.baseRefName,
+            headRefName: result.pull.headRefName,
+            reviewDecision: result.pull.reviewDecision,
+            mergeStateStatus: result.pull.mergeStateStatus,
+            checks: result.pull.checks,
+          },
+        };
+      } catch (error) {
+        return { ok: false as const, message: describe(error) };
+      }
+    },
+    async createPullRequest({ scope, repoPath, title, body, base, draft }) {
+      const { repo, status } = await githubRepository(
+        scope,
+        repoPath,
+      );
+      const info = await bb.sdk.plugins.callRpc({
+        pluginId: "github",
+        method: "repositoryInfo",
+        input: { repo },
+        outputSchema: githubRepositoryInfoResponseSchema,
+      });
+      if (status.branch === info.defaultBranch) {
+        throw new Error("Create a feature branch before opening a pull request.");
+      }
+      if (status.upstream === null || status.ahead > 0) {
+        throw new Error("Push this branch before creating a pull request.");
+      }
+      if (status.branch === null) throw new Error("This repository is detached from a branch.");
+      const created = await bb.sdk.plugins.callRpc({
+        pluginId: "github",
+        method: "createPullRequest",
+        input: {
+          repo,
+          title,
+          body,
+          base,
+          head: status.branch,
+          draft,
+        },
+        outputSchema: githubCreatePullResponseSchema,
+      });
+      return { ok: true as const, ...created };
+    },
+    async mergePullRequest({ scope, repoPath, number, method }) {
+      const { repo } = await githubRepository(scope, repoPath);
+      const info = await bb.sdk.plugins.callRpc({
+        pluginId: "github",
+        method: "repositoryInfo",
+        input: { repo },
+        outputSchema: githubRepositoryInfoResponseSchema,
+      });
+      if (!info.mergeMethods.includes(method)) {
+        throw new Error("That merge method is disabled for this repository.");
+      }
+      const currentPull = await bb.sdk.plugins.callRpc({
+        pluginId: "github",
+        method: "getPull",
+        input: { repo, number },
+        outputSchema: githubPullResponseSchema,
+      });
+      if (currentPull.pull.state !== "OPEN") {
+        throw new Error("Only open, ready-for-review pull requests can be merged.");
+      }
+      await bb.sdk.plugins.callRpc({
+        pluginId: "github",
+        method: "mergePullRequest",
+        input: { repo, number, method },
+        outputSchema: githubOkResponseSchema,
+      });
+      return { ok: true as const };
+    },
   });
 
   bb.cli.register({
@@ -693,8 +1288,37 @@ function isExcluded(entryPath: string, excluded: ReadonlySet<string>): boolean {
   return entryPath.split("/").some((segment) => excluded.has(segment));
 }
 
+function parseGithubRemote(url: string): string | null {
+  const match = url.trim().match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/u);
+  if (match === null) return null;
+  const repo = match[1]!.replace(/\.git$/u, "");
+  return /^[\w.-]+\/[\w.-]+$/u.test(repo) ? repo : null;
+}
+
+async function mapWithConcurrency<Input, Output>(
+  values: readonly Input[],
+  concurrency: number,
+  map: (value: Input) => Promise<Output>,
+): Promise<Output[]> {
+  const output = new Array<Output>(values.length);
+  let index = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      while (index < values.length) {
+        const current = index++;
+        output[current] = await map(values[current]!);
+      }
+    }),
+  );
+  return output;
+}
+
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function aiFailure(message: string) {
+  return { ok: false as const, message };
 }
 
 /**

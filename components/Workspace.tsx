@@ -6,16 +6,26 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { Icon } from "@/components/ui/icon";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import { cn, formatHomePathForDisplay } from "@/lib/utils";
-import type { FlatEntry } from "@/lib/tree";
+import { basename, type FlatEntry } from "@/lib/tree";
 import type { ScopeRef } from "@/lib/route";
 import { sameScope } from "@/lib/route";
-import type { ResolvedScope, rpcContract } from "../server.js";
+import type { GitRepositoryStatus, ResolvedScope, rpcContract } from "../server.js";
 import { Explorer } from "./Explorer";
-import { EditorTabs } from "./EditorTabs";
+import { EditorTabs, type ReviewTab } from "./EditorTabs";
 import { FileView, fileMetaLabel } from "./FileView";
 import { QuickOpen } from "./QuickOpen";
+import { AllChangesView, DiffEditor, SourceControlPanel } from "./SourceControl";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { isDirty, useFileTabs, type FileTab } from "./use-file-tabs";
 
@@ -46,6 +56,10 @@ const DEFAULT_EXPLORER_PX = 260;
 const WIDTH_STORAGE_KEY = "files-editor:explorer-width";
 const HIDDEN_STORAGE_KEY = "files-editor:include-hidden";
 
+type WorkbenchView = "explorer" | "sourceControl" | null;
+type MobileDestination = "explorer" | "editor" | "sourceControl";
+type PendingGitAction = { paths: string[]; run: () => Promise<void> };
+
 export interface WorkspaceProps {
   scope: ScopeRef | null;
   filePath: string | null;
@@ -66,8 +80,7 @@ export function Workspace({
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const tabs = useFileTabs(scope);
-  // Small viewports (phones) cannot fit the tree beside the editor, so the
-  // two panes take turns at full width instead of squeezing side by side.
+  // Small viewports use full-screen Explorer, Editor, and Source Control views.
   const isCompact = useIsCompactViewport();
 
   const [tree, setTree] = useState<TreeState>(EMPTY_TREE);
@@ -75,7 +88,14 @@ export function Workspace({
   const [explorerWidth, setExplorerWidth] = useState(readStoredWidth);
   // Both surfaces open on the tree — that is what you came for. The narrow
   // panel then collapses it once you pick a file, to give the editor the width.
-  const [isExplorerOpen, setIsExplorerOpen] = useState(true);
+  const [activeView, setActiveView] = useState<WorkbenchView>("explorer");
+  const [mobileDestination, setMobileDestination] = useState<MobileDestination>("explorer");
+  const [reviewTabs, setReviewTabs] = useState<ReviewTab[]>([]);
+  const [activeReviewId, setActiveReviewId] = useState<string | null>(null);
+  const [sourceRepos, setSourceRepos] = useState<GitRepositoryStatus[]>([]);
+  const [activeRepoPath, setActiveRepoPath] = useState<string | null>(null);
+  const [sourceRefreshToken, setSourceRefreshToken] = useState(0);
+  const [pendingGitAction, setPendingGitAction] = useState<PendingGitAction | null>(null);
   const [isQuickOpen, setIsQuickOpen] = useState(false);
   // A counter, not a flag: pressing ⌘F again with the bar already open has to
   // re-focus and reselect the field, which an unchanged boolean cannot signal.
@@ -92,6 +112,13 @@ export function Workspace({
   // and the effect below would helpfully reopen it. This remembers the value
   // to ignore until the route catches up.
   const staleRouteFile = useRef<string | null>(null);
+  const scopeKind = scope?.kind ?? null;
+  const scopeId = scope?.id ?? null;
+  const scopeKey = scope === null ? "none" : `${scope.kind}:${scope.id}`;
+  const stableScope = useMemo<ScopeRef | null>(
+    () => scopeKind === null || scopeId === null ? null : { kind: scopeKind, id: scopeId },
+    [scopeId, scopeKind],
+  );
 
   useEffect(() => {
     rootRef.current?.focus({ preventScroll: true });
@@ -146,14 +173,21 @@ export function Workspace({
   // Keyed on the scope's VALUE, not the object: callers build the ref during
   // render, so a fresh identity every render would re-walk the whole workspace
   // on every keystroke and every file click.
-  const scopeKind = scope?.kind ?? null;
-  const scopeId = scope?.id ?? null;
   useEffect(() => {
     loadTree(
       scopeKind === null || scopeId === null ? null : { kind: scopeKind, id: scopeId },
       includeHidden,
     );
   }, [includeHidden, loadTree, scopeId, scopeKind]);
+
+  useEffect(() => {
+    setReviewTabs([]);
+    setActiveReviewId(null);
+    setSourceRepos([]);
+    setActiveRepoPath(null);
+    setActiveView("explorer");
+    setMobileDestination("explorer");
+  }, [scopeId, scopeKind]);
 
   // Open the file named by the route: on arrival, when the route moves to
   // another file, and after a scope change cleared the tabs out from under it.
@@ -166,9 +200,10 @@ export function Workspace({
     if (filePath === null) return;
     if (tabs.activePath === filePath || hasRoutedTab) return;
     tabs.open(filePath);
+    setActiveReviewId(null);
+    setMobileDestination("editor");
     // On a phone the tree takes the full width, so a routed file (deep link,
     // reload, scope change) has to dismiss it or the editor stays hidden.
-    if (isCompact) setIsExplorerOpen(false);
     // `tabs` is rebuilt every render; the open is keyed on the route value and
     // on whether this surface already holds that file.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -177,7 +212,8 @@ export function Workspace({
   useRealtime("files-editor/changed", (payload) => {
     const change = payload as { scope?: ScopeRef; path?: string; sha256?: string };
     if (typeof change.path !== "string") return;
-    if (!sameScope(change.scope ?? null, scope)) return;
+    if (!sameScope(change.scope ?? null, stableScope)) return;
+    setSourceRefreshToken((current) => current + 1);
     const tab = tabs.tabs.find((candidate) => candidate.path === change.path);
     if (tab === undefined || isDirty(tab)) return;
     if (tab.sha256 === change.sha256) return;
@@ -188,6 +224,7 @@ export function Workspace({
     (path: string) => {
       staleRouteFile.current = null;
       tabs.open(path);
+      setActiveReviewId(null);
       onOpenPath(path);
       setFindRequest(0);
       // The explorer deliberately stays open on desktop: it used to collapse
@@ -197,7 +234,7 @@ export function Workspace({
       //
       // On a phone it takes the full width, so leaving it open would hide the
       // file just opened — there the toggle brings it back instead.
-      if (isCompact) setIsExplorerOpen(false);
+      if (isCompact) setMobileDestination("editor");
       //
       // The element that held focus is routinely the one the open destroys —
       // the empty state's button, or the previous file's textarea. Recover it,
@@ -214,10 +251,23 @@ export function Workspace({
    */
   const closedTo = useCallback(
     (next: string | null) => {
-      onOpenPath(next);
-      if (next === null && isCompact) setIsExplorerOpen(true);
+      onOpenPath(activeReviewId !== null ? null : next);
+      if (activeReviewId !== null) return;
+      if (next === null && reviewTabs.length > 0) {
+        setActiveReviewId((current) => current ?? reviewTabs[reviewTabs.length - 1]!.id);
+        if (isCompact) setMobileDestination("editor");
+        return;
+      }
+      if (next === null) {
+        setActiveReviewId(null);
+        setActiveView("explorer");
+        setMobileDestination("explorer");
+      } else {
+        setActiveReviewId(null);
+        setMobileDestination("editor");
+      }
     },
-    [isCompact, onOpenPath],
+    [activeReviewId, isCompact, onOpenPath, reviewTabs],
   );
   // Toast actions fire many renders later, so they read the live callback
   // through a ref instead of capturing the render's closure.
@@ -247,7 +297,7 @@ export function Workspace({
 
   /** Shared by "close others" and "close all": both can discard several drafts. */
   const closeMany = useCallback(
-    (doomed: readonly FileTab[], run: () => string | null) => {
+    (doomed: readonly FileTab[], run: () => string | null, navigate = true) => {
       staleRouteFile.current = filePath;
       const dirtyCount = doomed.filter(isDirty).length;
       if (dirtyCount > 0) {
@@ -258,43 +308,181 @@ export function Workspace({
           {
             action: {
               label: "Close anyway",
-              onClick: () => closedToRef.current(run()),
+              onClick: () => {
+                const next = run();
+                if (navigate) closedToRef.current(next);
+              },
             },
           },
         );
         return;
       }
-      closedTo(run());
+      const next = run();
+      if (navigate) closedTo(next);
     },
     [closedTo, filePath],
   );
 
   const closeOtherTabs = useCallback(
     (path: string) => {
+      if (activeReviewId !== null) {
+        closeMany(
+          tabs.tabs.filter((tab) => tab.path !== path),
+          () => {
+            tabs.closeOthers(path);
+            setReviewTabs([]);
+            setActiveReviewId(null);
+            onOpenPath(path);
+            setMobileDestination("editor");
+            return path;
+          },
+          false,
+        );
+        return;
+      }
       closeMany(
         tabs.tabs.filter((tab) => tab.path !== path),
-        () => tabs.closeOthers(path),
+        () => {
+          setReviewTabs([]);
+          setActiveReviewId(null);
+          return tabs.closeOthers(path);
+        },
       );
     },
-    [closeMany, tabs],
+    [activeReviewId, closeMany, onOpenPath, tabs],
   );
-
-  const closeAllTabs = useCallback(() => {
-    closeMany(tabs.tabs, () => {
-      tabs.closeAll();
-      return null;
-    });
-  }, [closeMany, tabs]);
 
   const activateTab = useCallback(
     (path: string) => {
       tabs.activate(path);
+      setActiveReviewId(null);
+      setMobileDestination("editor");
       onOpenPath(path);
     },
     [onOpenPath, tabs],
   );
 
-  const activeTab = tabs.activeTab;
+  const closeReviewTab = useCallback((id: string) => {
+    const index = reviewTabs.findIndex((tab) => tab.id === id);
+    const next = reviewTabs.filter((tab) => tab.id !== id);
+    setReviewTabs(next);
+    if (activeReviewId !== id) return;
+    const nextActive = next[Math.min(index, next.length - 1)]?.id ?? null;
+    if (nextActive !== null) {
+      setActiveReviewId(nextActive);
+      return;
+    }
+    setActiveReviewId(null);
+    if (tabs.activePath !== null) {
+      onOpenPath(tabs.activePath);
+      setMobileDestination("editor");
+    } else {
+      onOpenPath(null);
+      setActiveView("explorer");
+      setMobileDestination("explorer");
+    }
+  }, [activeReviewId, onOpenPath, reviewTabs, tabs.activePath]);
+
+  const activateReviewTab = useCallback((id: string) => {
+    setActiveReviewId(id);
+    onOpenPath(null);
+    setMobileDestination("editor");
+    setFindRequest(0);
+  }, [onOpenPath]);
+
+  const openAllChanges = useCallback(() => {
+    setReviewTabs((current) => current.some((tab) => tab.id === "all-changes")
+      ? current
+      : [...current, { id: "all-changes", kind: "all-changes", label: "All Changes" }]);
+    activateReviewTab("all-changes");
+  }, [activateReviewTab]);
+
+  const openDiff = useCallback((repoPath: string, path: string) => {
+    const id = `diff:${encodeURIComponent(repoPath)}:${encodeURIComponent(path)}`;
+    const repoName = repoPath === "" ? "root" : basename(repoPath);
+    setReviewTabs((current) => current.some((tab) => tab.id === id)
+      ? current
+      : [...current, {
+          id,
+          kind: "diff",
+          label: `${basename(path)} · ${repoName}`,
+          repoPath,
+          path,
+        }]);
+    activateReviewTab(id);
+  }, [activateReviewTab]);
+
+  const closeAllWorkbenchTabs = useCallback(() => {
+    closeMany(tabs.tabs, () => {
+      tabs.closeAll();
+      setReviewTabs([]);
+      setActiveReviewId(null);
+      onOpenPath(null);
+      setActiveView("explorer");
+      setMobileDestination("explorer");
+      return null;
+    }, false);
+  }, [closeMany, onOpenPath, tabs]);
+
+  const onBeforeGitAction = useCallback((paths: string[], run: () => Promise<void>) => {
+    const dirty = [...new Set(paths)].filter((path) =>
+      tabs.tabs.some((tab) => tab.path === path && isDirty(tab)),
+    );
+    if (dirty.length === 0) {
+      void run();
+      return;
+    }
+    setPendingGitAction({ paths: dirty, run });
+  }, [tabs.tabs]);
+
+  const resolvePendingGitAction = useCallback(async (choice: "save" | "discard" | "cancel") => {
+    if (pendingGitAction === null) return;
+    if (choice === "cancel") {
+      setPendingGitAction(null);
+      return;
+    }
+    const [path, ...remaining] = pendingGitAction.paths;
+    if (path === undefined) {
+      const run = pendingGitAction.run;
+      setPendingGitAction(null);
+      await run();
+      return;
+    }
+    if (choice === "save") {
+      const saved = await tabs.save(path);
+      if (!saved) {
+        toast.error(`Could not save ${path}. Resolve the save conflict before continuing.`);
+        return;
+      }
+    } else {
+      tabs.discard(path);
+    }
+    if (remaining.length > 0) {
+      setPendingGitAction({ ...pendingGitAction, paths: remaining });
+      return;
+    }
+    const run = pendingGitAction.run;
+    setPendingGitAction(null);
+    await run();
+  }, [pendingGitAction, tabs]);
+
+  const onRepositoriesChange = useCallback((repositories: GitRepositoryStatus[]) => {
+    setSourceRepos(repositories);
+    setActiveRepoPath((current) =>
+      current !== null && repositories.some((repo) => repo.repoPath === current)
+        ? current
+        : repositories[0]?.repoPath ?? null,
+    );
+  }, []);
+
+  const runBeforeGitActionForDiff = useCallback(
+    (repoPath: string, path: string, run: () => Promise<void>) =>
+      onBeforeGitAction([workspaceFilePath(repoPath, path)], run),
+    [onBeforeGitAction],
+  );
+
+  const activeReviewTab = reviewTabs.find((tab) => tab.id === activeReviewId) ?? null;
+  const activeTab = activeReviewTab === null ? tabs.activeTab : null;
   const resolved = tree.scope;
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -387,32 +575,86 @@ export function Workspace({
     [onChangeScope, resolved],
   );
 
+  const showWorkspacePanel = isCompact
+    ? mobileDestination !== "editor"
+    : activeView !== null;
+  const showExplorer = isCompact
+    ? mobileDestination === "explorer"
+    : activeView === "explorer";
+  const showSourceControl = isCompact
+    ? mobileDestination === "sourceControl"
+    : activeView === "sourceControl";
+  const showEditor = !isCompact || mobileDestination === "editor";
+  const sourceChangeCount = sourceRepos.reduce(
+    (total, repo) => total + repo.changes.length + repo.branchChanges.length,
+    0,
+  );
+  const activeRepository = sourceRepos.find((repo) => repo.repoPath === activeRepoPath)
+    ?? sourceRepos[0]
+    ?? null;
+  const reviewPath = activeReviewTab?.kind === "diff"
+    ? [activeReviewTab.repoPath, activeReviewTab.path].filter(Boolean).join("/")
+    : activeReviewTab?.kind === "all-changes" ? "All Changes" : null;
+  const refreshSourceControl = () => setSourceRefreshToken((current) => current + 1);
+
   return (
     <div
       ref={rootRef}
       onKeyDown={onKeyDown}
-      // Focusable and focused on mount so ⌘P and ⌘S work before anything inside
-      // has been clicked, and again after a child that had focus unmounts.
       tabIndex={-1}
-      // `h-full` as well as `flex-1`: flex-1 only sizes this when the host
-      // hands the surface a flex column. A thread panel tab is a definite-height
-      // box, where flex-1 does nothing, the root takes its content's height, and
-      // nothing inside it — the tree least of all — can ever scroll.
-      className="relative flex h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-background focus:outline-none"
+      data-variant={variant}
+      className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background focus:outline-none"
     >
-      {isExplorerOpen ? (
-        <>
-          <div
-            style={isCompact ? undefined : { width: explorerWidth }}
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        <aside
+          aria-label="Workbench views"
+          className="hidden w-11 shrink-0 flex-col items-stretch border-r border-border bg-surface-recessed py-1 md:flex"
+        >
+          <button
+            type="button"
+            aria-label="Explorer"
+            aria-pressed={activeView === "explorer"}
+            title="Explorer"
+            onClick={() => setActiveView((current) => current === "explorer" ? null : "explorer")}
             className={cn(
-              "flex min-h-0 shrink-0 flex-col overflow-hidden",
-              // On a phone the tree takes the whole width and the editor hides
-              // behind it; side by side, neither pane would be usable.
-              isCompact && "w-full flex-1",
+              "relative flex size-11 cursor-pointer items-center justify-center border-l-2 text-muted-foreground transition-colors hover:text-foreground",
+              activeView === "explorer" ? "border-primary text-foreground" : "border-transparent",
             )}
           >
+            <Icon name="Folder" aria-hidden className="size-5" />
+          </button>
+          <button
+            type="button"
+            aria-label={sourceChangeCount > 0 ? `Source Control, ${sourceChangeCount} changes` : "Source Control"}
+            aria-pressed={activeView === "sourceControl"}
+            title="Source Control"
+            onClick={() => setActiveView((current) => current === "sourceControl" ? null : "sourceControl")}
+            className={cn(
+              "relative flex size-11 cursor-pointer items-center justify-center border-l-2 text-muted-foreground transition-colors hover:text-foreground",
+              activeView === "sourceControl" ? "border-primary text-foreground" : "border-transparent",
+            )}
+          >
+            <Icon name="GitBranch" aria-hidden className="size-5" />
+            {sourceChangeCount > 0 ? (
+              <span className="absolute right-1 bottom-1 min-w-3.5 rounded-full bg-surface-active px-1 text-center text-[9px] leading-3 text-foreground">
+                {sourceChangeCount > 99 ? "99+" : sourceChangeCount}
+              </span>
+            ) : null}
+          </button>
+        </aside>
+
+        <div
+          style={isCompact || !showWorkspacePanel ? undefined : { width: explorerWidth }}
+          className={cn(
+            "min-h-0 min-w-0 flex-col overflow-hidden md:shrink-0 md:border-r md:border-border",
+            isCompact ? "w-full flex-1" : "shrink-0",
+            showWorkspacePanel ? "flex" : "hidden",
+          )}
+        >
+          <div className={cn("min-h-0 min-w-0 flex-1 flex-col overflow-hidden", showExplorer ? "flex" : "hidden")}>
             <Explorer
               entries={tree.entries}
+              treeStorageKey={scopeKey}
               activePath={tabs.activePath}
               isLoading={tree.status === "loading"}
               error={tree.error}
@@ -429,164 +671,246 @@ export function Workspace({
               header={explorerHeader}
             />
           </div>
+          <div className={cn("min-h-0 min-w-0 flex-1 flex-col overflow-hidden", showSourceControl ? "flex" : "hidden")}>
+            <SourceControlPanel
+              scope={stableScope}
+              scopeLabel={resolved?.label ?? "Workspace"}
+              dirtyTabs={tabs.tabs}
+              onBeforeGitAction={onBeforeGitAction}
+              onOpenDiff={openDiff}
+              onRepositoriesChange={onRepositoriesChange}
+              onSelectRepository={setActiveRepoPath}
+              onOpenAllChanges={openAllChanges}
+              refreshToken={sourceRefreshToken}
+            />
+          </div>
+        </div>
+
+        {!isCompact && showWorkspacePanel ? (
           <div
             role="separator"
             aria-orientation="vertical"
-            aria-label="Resize the file explorer"
+            aria-label="Resize the workbench side bar"
             onPointerDown={startResize}
             onDoubleClick={() => {
               setExplorerWidth(DEFAULT_EXPLORER_PX);
               storeWidth(DEFAULT_EXPLORER_PX);
             }}
-            // No drag handle on a phone: the tree is full-width there.
-            className={cn(
-              "w-px shrink-0 cursor-col-resize bg-border transition-colors hover:bg-ring",
-              isCompact && "hidden",
-            )}
+            className="w-px shrink-0 cursor-col-resize bg-border transition-colors hover:bg-ring"
           />
-        </>
-      ) : null}
+        ) : null}
 
-      <div
-        className={cn(
-          "flex min-h-0 min-w-0 flex-1 flex-col",
-          // The full-width tree on a phone covers the editor while open.
-          isCompact && isExplorerOpen && "hidden",
-        )}
-      >
-        <EditorTabs
-          tabs={tabs.tabs}
-          activePath={tabs.activePath}
-          onActivate={activateTab}
-          onClose={closeTab}
-          onCloseOthers={closeOtherTabs}
-          onCloseAll={closeAllTabs}
-        />
-
-        <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2">
-          <button
-            type="button"
-            onClick={() => setIsExplorerOpen((open) => !open)}
-            aria-label={isExplorerOpen ? "Hide the file explorer" : "Show the file explorer"}
-            title={isExplorerOpen ? "Hide the file explorer" : "Show the file explorer"}
-            className={cn(
-              "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md",
-              "text-muted-foreground hover:bg-state-hover hover:text-foreground",
-              "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
-              isExplorerOpen && "text-foreground",
-            )}
-          >
-            <Icon name="PanelLeft" aria-hidden className="size-3.5" />
-          </button>
-
-          <Breadcrumb
-            root={resolved?.root ?? null}
-            path={activeTab?.path ?? null}
-            hostName={resolved?.hostName ?? null}
-            isLocal={resolved?.isLocal ?? true}
-          />
-
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            {activeTab?.file?.kind === "text" ? (
-              <>
-                <span className="hidden px-2 text-[11px] text-muted-foreground md:inline">
-                  {fileMetaLabel(activeTab)}
-                </span>
-                <ModeToggle
-                  isEditing={activeTab.isEditing}
-                  canEdit={activeTab.file.editable}
-                  onChange={(next) => tabs.setEditing(activeTab.path, next)}
-                />
-                <ToolbarButton
-                  icon="Search"
-                  label="Find in file (⌘F)"
-                  isActive={findRequest > 0}
-                  onClick={() =>
-                    setFindRequest((current) => (current > 0 ? 0 : current + 1))
-                  }
-                />
-                <ToolbarButton
-                  icon="Check"
-                  label={
-                    activeTab.save.kind === "saving"
-                      ? "Saving…"
-                      : "Save (⌘S)"
-                  }
-                  isDisabled={!isDirty(activeTab) || activeTab.save.kind === "saving"}
-                  isSpinning={activeTab.save.kind === "saving"}
-                  onClick={tabs.save}
-                />
-              </>
-            ) : null}
-            {activeTab !== null && resolved !== null ? (
-              // On a phone the preview panel has no room to share, so the
-              // external-open button becomes a word-wrap toggle for text files.
-              isCompact ? (
-                activeTab.file?.kind === "text" ? (
-                  <ToolbarButton
-                    icon="TextWrap"
-                    label={wordWrap ? "Don't wrap long lines" : "Wrap long lines"}
-                    isActive={wordWrap}
-                    isPressed={wordWrap}
-                    onClick={() => setWordWrap((wrap) => !wrap)}
-                  />
-                ) : null
-              ) : (
-                <ToolbarButton
-                  icon="ExternalLink"
-                  label="Open in BB's file preview"
-                onClick={() => {
-                  const opened = navigate.experimental_openFilePreview({
-                    target:
-                      resolved.environmentId === null
-                        ? {
-                            kind: "host",
-                            hostId: resolved.hostId,
-                            path: absolutePathFor(resolved.root, activeTab.path),
-                          }
-                        : {
-                            kind: "workspace",
-                            environmentId: resolved.environmentId,
-                            path: activeTab.path,
-                          },
-                    location: null,
-                  });
-                  if (!opened) {
-                    toast.error("This surface has no file preview panel.");
-                  }
-                }}
-              />
-              )
-            ) : null}
-          </div>
-        </div>
-
-        {activeTab === null ? (
-          <EmptyEditor
-            hasWorkspace={resolved !== null}
-            error={tree.error}
-            listing={tree.listing}
-            truncated={tree.truncated}
-            excluded={tree.excluded}
-            onQuickOpen={() => setIsQuickOpen(true)}
-          />
-        ) : (
-          <FileView
-            tab={activeTab}
-            onChangeDraft={tabs.setDraft}
-            onSave={tabs.save}
-            onReload={() => tabs.reload()}
-            onOverwrite={tabs.overwrite}
-            onRetry={tabs.retry}
-            findRequest={findRequest}
-            wordWrap={wordWrap}
-            onCloseFind={() => {
-              setFindRequest(0);
-              restoreFocus();
+        <div className={cn("min-h-0 min-w-0 flex-1 flex-col overflow-hidden", showEditor ? "flex" : "hidden")}>
+          <EditorTabs
+            tabs={tabs.tabs}
+            reviewTabs={reviewTabs}
+            activePath={activeTab?.path ?? null}
+            activeReviewId={activeReviewId}
+            onActivate={activateTab}
+            onActivateReview={activateReviewTab}
+            onClose={closeTab}
+            onCloseReview={closeReviewTab}
+            onCloseOthers={closeOtherTabs}
+            onCloseAll={() => {
+              closeAllWorkbenchTabs();
             }}
           />
-        )}
+
+          <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2">
+            <button
+              type="button"
+              onClick={() => setActiveView((current) => current === "explorer" ? null : "explorer")}
+              aria-label={activeView === "explorer" ? "Hide the Explorer panel" : "Show the Explorer panel"}
+              title="Explorer"
+              className="hidden size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none md:flex"
+            >
+              <Icon name="PanelLeft" aria-hidden className="size-3.5" />
+            </button>
+
+            <Breadcrumb
+              root={resolved?.root ?? null}
+              path={activeTab?.path ?? reviewPath}
+              hostName={resolved?.hostName ?? null}
+              isLocal={resolved?.isLocal ?? true}
+            />
+
+            <div className="ml-auto flex shrink-0 items-center gap-1">
+              {activeTab?.file?.kind === "text" ? (
+                <>
+                  <span className="hidden px-2 text-[11px] text-muted-foreground md:inline">
+                    {fileMetaLabel(activeTab)}
+                  </span>
+                  <ModeToggle
+                    isEditing={activeTab.isEditing}
+                    canEdit={activeTab.file.editable}
+                    onChange={(next) => tabs.setEditing(activeTab.path, next)}
+                  />
+                  <ToolbarButton
+                    icon="Search"
+                    label="Find in file (⌘F)"
+                    isActive={findRequest > 0}
+                    onClick={() => setFindRequest((current) => current > 0 ? 0 : current + 1)}
+                  />
+                  <ToolbarButton
+                    icon="Check"
+                    label={activeTab.save.kind === "saving" ? "Saving…" : "Save (⌘S)"}
+                    isDisabled={!isDirty(activeTab) || activeTab.save.kind === "saving"}
+                    isSpinning={activeTab.save.kind === "saving"}
+                    onClick={() => void tabs.save()}
+                  />
+                </>
+              ) : null}
+              {activeTab !== null && resolved !== null ? (
+                isCompact ? (
+                  activeTab.file?.kind === "text" ? (
+                    <ToolbarButton
+                      icon="TextWrap"
+                      label={wordWrap ? "Don't wrap long lines" : "Wrap long lines"}
+                      isActive={wordWrap}
+                      isPressed={wordWrap}
+                      onClick={() => setWordWrap((wrap) => !wrap)}
+                    />
+                  ) : null
+                ) : (
+                  <ToolbarButton
+                    icon="ExternalLink"
+                    label="Open in BB's file preview"
+                    onClick={() => {
+                      const opened = navigate.experimental_openFilePreview({
+                        target:
+                          resolved.environmentId === null
+                            ? {
+                                kind: "host",
+                                hostId: resolved.hostId,
+                                path: absolutePathFor(resolved.root, activeTab.path),
+                              }
+                            : {
+                                kind: "workspace",
+                                environmentId: resolved.environmentId,
+                                path: activeTab.path,
+                              },
+                        location: null,
+                      });
+                      if (!opened) toast.error("This surface has no file preview panel.");
+                    }}
+                  />
+                )
+              ) : null}
+            </div>
+          </div>
+
+          {activeReviewTab?.kind === "all-changes" ? (
+            <AllChangesView
+              scope={stableScope}
+              repos={sourceRepos}
+              onOpenDiff={openDiff}
+              onRefresh={refreshSourceControl}
+              onBeforeGitAction={runBeforeGitActionForDiff}
+            />
+          ) : activeReviewTab?.kind === "diff" && activeReviewTab.path !== undefined ? (
+            <DiffEditor
+              scope={stableScope}
+              repoPath={activeReviewTab.repoPath ?? ""}
+              repoLabel={activeReviewTab.repoPath || "Workspace root"}
+              path={activeReviewTab.path}
+              onChanged={refreshSourceControl}
+              onBeforeGitAction={runBeforeGitActionForDiff}
+            />
+          ) : activeTab === null ? (
+            <EmptyEditor
+              hasWorkspace={resolved !== null}
+              error={tree.error}
+              listing={tree.listing}
+              truncated={tree.truncated}
+              excluded={tree.excluded}
+              onQuickOpen={() => setIsQuickOpen(true)}
+            />
+          ) : (
+            <FileView
+              tab={activeTab}
+              onChangeDraft={tabs.setDraft}
+              onSave={() => void tabs.save()}
+              onReload={() => tabs.reload()}
+              onOverwrite={tabs.overwrite}
+              onRetry={tabs.retry}
+              findRequest={findRequest}
+              wordWrap={wordWrap}
+              onCloseFind={() => {
+                setFindRequest(0);
+                restoreFocus();
+              }}
+            />
+          )}
+
+          <div className="hidden h-6 shrink-0 items-center gap-2 bg-primary/90 px-2 text-[11px] text-primary-foreground md:flex">
+            <Icon name="GitBranch" aria-hidden className="size-3.5" />
+            <button
+              type="button"
+              onClick={() => setActiveView("sourceControl")}
+              title={activeRepository?.repoPath || "Workspace root"}
+              className="max-w-[28rem] truncate hover:underline"
+            >
+              {activeRepository === null
+                ? "No Git repository"
+                : `${activeRepository.repoPath || "Workspace root"} · ${activeRepository.branch ?? "Detached HEAD"}`}
+            </button>
+            {activeRepository !== null ? (
+              <span className="tabular-nums">↑{activeRepository.ahead} ↓{activeRepository.behind}</span>
+            ) : null}
+            <span className="ml-auto tabular-nums">
+              {sourceChangeCount > 0 ? `${sourceChangeCount} changes` : "Ready"}
+            </span>
+          </div>
+        </div>
       </div>
+
+      <nav aria-label="Workbench destinations" className="grid h-14 shrink-0 grid-cols-3 border-t border-border bg-surface-recessed pb-[env(safe-area-inset-bottom)] md:hidden">
+        {([
+          ["explorer", "Explorer", "Folder"],
+          ["editor", "Editor", "Code"],
+          ["sourceControl", "Source Control", "GitBranch"],
+        ] as const).map(([destination, label, icon]) => (
+          <button
+            key={destination}
+            type="button"
+            aria-pressed={mobileDestination === destination}
+            onClick={() => {
+              setMobileDestination(destination);
+              if (destination !== "editor") setActiveView(destination);
+            }}
+            className={cn(
+              "flex min-w-0 cursor-pointer flex-col items-center justify-center gap-0.5 text-[10px]",
+              mobileDestination === destination ? "text-foreground" : "text-muted-foreground",
+            )}
+          >
+            <span className="relative">
+              <Icon name={icon} aria-hidden className="size-5" />
+              {destination === "sourceControl" && sourceChangeCount > 0 ? (
+                <span className="absolute -top-1 -right-2 min-w-3 rounded-full bg-primary px-1 text-center text-[8px] leading-3 text-primary-foreground">
+                  {sourceChangeCount > 99 ? "99+" : sourceChangeCount}
+                </span>
+              ) : null}
+            </span>
+            <span className="max-w-full truncate px-1">{label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <Dialog open={pendingGitAction !== null} onOpenChange={(open) => !open && void resolvePendingGitAction("cancel")}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Unsaved editor draft</DialogTitle>
+            <DialogDescription>
+              {pendingGitAction?.paths[0]} has edits that are not on disk. Save or discard the draft before this Git action.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button variant="outline" onClick={() => void resolvePendingGitAction("cancel")}>Cancel action</Button>
+            <Button variant="secondary" onClick={() => void resolvePendingGitAction("discard")}>Discard draft</Button>
+            <Button onClick={() => void resolvePendingGitAction("save")}>Save and continue</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {isQuickOpen ? (
         <QuickOpen
@@ -831,6 +1155,10 @@ function absolutePathFor(root: string, relativePath: string): string {
   const tail =
     separator === "\\" ? relativePath.replace(/\//g, "\\") : relativePath;
   return `${trimmed}${separator}${tail}`;
+}
+
+function workspaceFilePath(repoPath: string, path: string): string {
+  return repoPath === "" ? path : `${repoPath}/${path}`;
 }
 
 function clampWidth(value: number): number {

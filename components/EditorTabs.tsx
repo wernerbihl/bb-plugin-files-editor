@@ -6,18 +6,34 @@ import { FileGlyph } from "./FileGlyph";
 import { TabContextMenu } from "./TabContextMenu";
 import { isDirty, type FileTab } from "./use-file-tabs";
 
+export interface ReviewTab {
+  id: string;
+  kind: "all-changes" | "diff";
+  label: string;
+  repoPath?: string;
+  path?: string;
+}
+
 export function EditorTabs({
   tabs,
+  reviewTabs,
   activePath,
+  activeReviewId,
   onActivate,
+  onActivateReview,
   onClose,
+  onCloseReview,
   onCloseOthers,
   onCloseAll,
 }: {
   tabs: readonly FileTab[];
+  reviewTabs: readonly ReviewTab[];
   activePath: string | null;
+  activeReviewId: string | null;
   onActivate: (path: string) => void;
+  onActivateReview: (id: string) => void;
   onClose: (path: string) => void;
+  onCloseReview: (id: string) => void;
   onCloseOthers: (path: string) => void;
   onCloseAll: () => void;
 }) {
@@ -25,9 +41,9 @@ export function EditorTabs({
 
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [activePath]);
+  }, [activePath, activeReviewId]);
 
-  if (tabs.length === 0) return null;
+  if (tabs.length === 0 && reviewTabs.length === 0) return null;
 
   return (
     // Deliberately a list rather than role="tablist": a real tab list needs
@@ -52,7 +68,7 @@ export function EditorTabs({
         return (
           <TabContextMenu
             key={tab.path}
-            hasOthers={tabs.length > 1}
+            hasOthers={tabs.length + reviewTabs.length > 1}
             onClose={() => onClose(tab.path)}
             onCloseOthers={() => onCloseOthers(tab.path)}
             onCloseAll={onCloseAll}
@@ -107,6 +123,49 @@ export function EditorTabs({
             </button>
           </div>
           </TabContextMenu>
+        );
+      })}
+      {reviewTabs.map((tab) => {
+        const isActive = tab.id === activeReviewId;
+        return (
+          <div
+            key={tab.id}
+            role="listitem"
+            ref={isActive ? activeRef : undefined}
+            className={cn(
+              "group flex shrink-0 items-center gap-1.5 border-r border-border pr-1 pl-3",
+              isActive
+                ? "bg-background text-foreground"
+                : "text-muted-foreground hover:bg-state-hover",
+            )}
+          >
+            <button
+              type="button"
+              aria-current={isActive ? "true" : undefined}
+              title={tab.kind === "diff" ? `${tab.repoPath}/${tab.path}` : "All working tree and branch diffs"}
+              onClick={() => onActivateReview(tab.id)}
+              onAuxClick={(event) => {
+                if (event.button === 1) onCloseReview(tab.id);
+              }}
+              className="flex cursor-pointer items-center gap-1.5 py-2 text-[13px] focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+            >
+              <Icon name="FileDiff" aria-hidden className="size-3.5 shrink-0 text-diff-modified" />
+              <span className="max-w-48 truncate">{tab.label}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onCloseReview(tab.id)}
+              aria-label={`Close ${tab.label}`}
+              title={`Close ${tab.label}`}
+              className={cn(
+                "flex size-5 cursor-pointer items-center justify-center rounded",
+                "text-muted-foreground hover:bg-state-active hover:text-foreground",
+                "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
+              )}
+            >
+              <Icon name="X" aria-hidden className="size-3" />
+            </button>
+          </div>
         );
       })}
     </div>

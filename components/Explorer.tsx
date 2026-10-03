@@ -14,6 +14,7 @@ import { FileGlyph } from "./FileGlyph";
 
 export interface ExplorerProps {
   entries: readonly FlatEntry[];
+  treeStorageKey: string;
   activePath: string | null;
   isLoading: boolean;
   error: string | null;
@@ -35,6 +36,7 @@ const ROW_LIMIT = 600;
 
 export function Explorer({
   entries,
+  treeStorageKey,
   activePath,
   isLoading,
   error,
@@ -48,27 +50,67 @@ export function Explorer({
   header,
 }: ExplorerProps) {
   const [query, setQuery] = useState("");
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() =>
+    readExpanded(treeStorageKey),
+  );
   const activeRowRef = useRef<HTMLButtonElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const lastScrollPosition = useRef(0);
+  const activePathRef = useRef(activePath);
+  const pendingActiveScroll = useRef(false);
+  const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const tree = useMemo(() => buildTree(entries), [entries]);
   const filtered = useMemo(() => filterTree(tree, query), [tree, query]);
 
   // Reveal the active file by opening every directory above it.
   useEffect(() => {
-    if (activePath === null) return;
-    setExpanded((current) => {
-      const ancestors = ancestorsOf(activePath);
-      if (ancestors.every((ancestor) => current.has(ancestor))) return current;
-      const next = new Set(current);
-      for (const ancestor of ancestors) next.add(ancestor);
-      return next;
-    });
-  }, [activePath]);
+    if (activePath !== null && activePath !== activePathRef.current) {
+      setExpanded((current) => {
+        const ancestors = ancestorsOf(activePath);
+        if (ancestors.every((ancestor) => current.has(ancestor))) return current;
+        const next = new Set(current);
+        for (const ancestor of ancestors) next.add(ancestor);
+        return next;
+      });
+      pendingActiveScroll.current = true;
+    }
+    activePathRef.current = activePath;
+    if (pendingActiveScroll.current && activeRowRef.current !== null) {
+      activeRowRef.current.scrollIntoView({ block: "nearest" });
+      pendingActiveScroll.current = false;
+    }
+  }, [activePath, entries.length]);
 
   useEffect(() => {
-    activeRowRef.current?.scrollIntoView({ block: "nearest" });
-  }, [activePath, entries.length]);
+    setExpanded(readExpanded(treeStorageKey));
+    const frame = requestAnimationFrame(() => {
+      if (scrollRef.current !== null) {
+        lastScrollPosition.current = readScrollPosition(treeStorageKey);
+        scrollRef.current.scrollTop = lastScrollPosition.current;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [entries.length, treeStorageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        expandedStorageKey(treeStorageKey),
+        JSON.stringify([...expanded]),
+      );
+    } catch {
+      return;
+    }
+  }, [expanded, treeStorageKey]);
+
+  useEffect(
+    () => () => {
+      if (scrollSaveTimer.current !== null) clearTimeout(scrollSaveTimer.current);
+      storeScrollPosition(treeStorageKey, lastScrollPosition.current);
+    },
+    [treeStorageKey],
+  );
 
   const effectiveExpanded = useMemo(() => {
     if (filtered.expand.size === 0) return expanded;
@@ -154,7 +196,17 @@ export function Explorer({
         />
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto pb-2">
+      <div
+        ref={scrollRef}
+        onScroll={() => {
+          lastScrollPosition.current = scrollRef.current?.scrollTop ?? 0;
+          if (scrollSaveTimer.current !== null) clearTimeout(scrollSaveTimer.current);
+          scrollSaveTimer.current = setTimeout(() => {
+            storeScrollPosition(treeStorageKey, lastScrollPosition.current);
+          }, 120);
+        }}
+        className="min-h-0 flex-1 overflow-auto pb-2"
+      >
         {error !== null ? (
           <p className="px-3 py-2 text-xs text-destructive">{error}</p>
         ) : isLoading && entries.length === 0 ? (
@@ -193,6 +245,45 @@ export function Explorer({
       </div>
     </div>
   );
+}
+
+function expandedStorageKey(treeStorageKey: string): string {
+  return `files-editor:tree:${treeStorageKey}:expanded`;
+}
+
+function scrollStorageKey(treeStorageKey: string): string {
+  return `files-editor:tree:${treeStorageKey}:scroll`;
+}
+
+function readExpanded(treeStorageKey: string): ReadonlySet<string> {
+  try {
+    const value = localStorage.getItem(expandedStorageKey(treeStorageKey));
+    const parsed = value === null ? [] : JSON.parse(value);
+    return new Set(
+      Array.isArray(parsed)
+        ? parsed.filter((entry): entry is string => typeof entry === "string")
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function readScrollPosition(treeStorageKey: string): number {
+  try {
+    const value = Number(localStorage.getItem(scrollStorageKey(treeStorageKey)) ?? 0);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function storeScrollPosition(treeStorageKey: string, position: number): void {
+  try {
+    localStorage.setItem(scrollStorageKey(treeStorageKey), String(position));
+  } catch {
+    return;
+  }
 }
 
 function ExplorerRow({

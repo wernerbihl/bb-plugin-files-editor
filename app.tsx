@@ -192,7 +192,7 @@ function PreviewSection() {
     <figure className="space-y-2">
       <img
         src={state.src}
-        alt="The Files panel: project and worktree pickers over a file tree, tabs, find-in-file, and the open file"
+        alt="The Files workbench: workspace tree, editor tabs, find-in-file, and an open file"
         className="w-full rounded-lg border border-border"
       />
       <figcaption className="text-xs text-muted-foreground">
@@ -207,7 +207,7 @@ export default definePluginApp((app) => {
     id: "preview",
     title: "What it looks like",
     description:
-      "A searchable tree on the left, tabs across the top, the whole file in the middle.",
+      "A VS Code-style workbench with Explorer, editor tabs, Source Control, and mobile navigation.",
     component: PreviewSection,
   });
 

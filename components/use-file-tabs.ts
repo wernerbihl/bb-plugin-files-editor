@@ -64,7 +64,8 @@ export interface FileTabsApi {
   activate(path: string): void;
   setDraft(path: string, draft: string): void;
   setEditing(path: string, isEditing: boolean): void;
-  save(): void;
+  save(path?: string): Promise<boolean>;
+  discard(path: string): void;
   overwrite(): void;
   reload(path?: string): void;
   retry(): void;
@@ -232,18 +233,17 @@ export function useFileTabs(scope: ScopeRef | null): FileTabsApi {
    * BB reads an explicit null as create-only, so the guard is either a hash or
    * an absent field — never null.
    */
-  const writeActive = useCallback(
-    (guard: string | "force") => {
+  const writeFile = useCallback(
+    (path: string, guard: string | "force"): Promise<boolean> => {
       const activeScope = scopeRef.current;
-      const path = activePathRef.current;
-      if (activeScope === null || path === null) return;
+      if (activeScope === null) return Promise.resolve(false);
 
       const tab = tabsRef.current.find((candidate) => candidate.path === path);
-      if (tab === undefined || tab.draft === null) return;
+      if (tab === undefined || !isDirty(tab)) return Promise.resolve(true);
       // A second ⌘S while the first is still in flight would write the same
       // guard hash twice and report the second as a conflict.
-      if (tab.save.kind === "saving") return;
-      const content = tab.draft;
+      if (tab.save.kind === "saving") return Promise.resolve(false);
+      const content = tab.draft!;
 
       const generation = (writeSequence.current += 1);
       inFlightWrite.current.set(path, generation);
@@ -252,7 +252,7 @@ export function useFileTabs(scope: ScopeRef | null): FileTabsApi {
         sameScope(scopeRef.current, activeScope);
 
       patch(path, (current) => ({ ...current, save: { kind: "saving" } }));
-      void rpc
+      return rpc
         .call("write", {
           scope: activeScope,
           path,
@@ -260,10 +260,10 @@ export function useFileTabs(scope: ScopeRef | null): FileTabsApi {
           ...(guard === "force" ? {} : { expectedSha256: guard }),
         })
         .then((result) => {
-          if (!isCurrent()) return;
+          if (!isCurrent()) return false;
           if (result.outcome === "conflict") {
             patch(path, (current) => ({ ...current, save: { kind: "conflict" } }));
-            return;
+            return false;
           }
           patch(path, (current) => ({
             ...current,
@@ -280,15 +280,18 @@ export function useFileTabs(scope: ScopeRef | null): FileTabsApi {
                     sha256: result.sha256,
                     sizeBytes: result.sizeBytes,
                   }
-                : current.file,
+            : current.file,
           }));
+          const latest = tabsRef.current.find((candidate) => candidate.path === path);
+          return latest?.draft === null || latest?.draft === content;
         })
         .catch((error: unknown) => {
-          if (!isCurrent()) return;
+          if (!isCurrent()) return false;
           patch(path, (current) => ({
             ...current,
             save: { kind: "error", message: messageOf(error, "Save failed") },
           }));
+          return false;
         });
     },
     [patch, rpc],
@@ -313,14 +316,29 @@ export function useFileTabs(scope: ScopeRef | null): FileTabsApi {
       (path, isEditing) => patch(path, (tab) => ({ ...tab, isEditing })),
       [patch],
     ),
-    save: useCallback(() => {
-      const path = activePathRef.current;
-      const tab = tabsRef.current.find((candidate) => candidate.path === path);
-      writeActive(tab?.sha256 ?? "force");
-    }, [writeActive]),
+    save: useCallback(
+      (requestedPath?: string) => {
+        const path = requestedPath ?? activePathRef.current;
+        if (path === null) return Promise.resolve(true);
+        const tab = tabsRef.current.find((candidate) => candidate.path === path);
+        if (tab === undefined || !isDirty(tab)) return Promise.resolve(true);
+        return writeFile(path, tab.sha256 ?? "force");
+      },
+      [writeFile],
+    ),
+    discard: useCallback(
+      (path) =>
+        patch(path, (tab) => ({
+          ...tab,
+          draft: null,
+          save: tab.save.kind === "saving" ? tab.save : { kind: "clean" },
+        })),
+      [patch],
+    ),
     overwrite: useCallback(() => {
-      writeActive("force");
-    }, [writeActive]),
+      const path = activePathRef.current;
+      if (path !== null) void writeFile(path, "force");
+    }, [writeFile]),
     reload: useCallback(
       (path?: string) => {
         const target = path ?? activePathRef.current;
