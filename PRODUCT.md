@@ -28,8 +28,8 @@ Users work across local or connected hosts, project checkouts, and thread worktr
 - Restore each workspace's Explorer expansion and scroll location, including when the last editor tab closes.
 - Source Control groups Git status by repository in the selected checkout or worktree. It includes staged, unstaged, untracked, and branch changes; whole-file staging works on all devices and hunk staging is a desktop control.
 - Commits use the staged set. Push is a separate action and uses an upstream when available.
-- Commit and pull request text can be drafted through BB's selected inference service and remains editable before use.
-- GitHub pull request actions use BB's GitHub plugin and its server-side authentication. Other Git hosts retain file diffs and Git actions without pull request controls.
+- Commit messages, pull request titles, and descriptions are entered manually.
+- GitHub pull request actions run GitHub CLI (`gh`) on the host that owns each workspace; that host must have `gh` installed and authenticated. Other Git hosts retain file diffs and Git actions without pull request controls.
 - Pull request creation requires a review form. Merging requires a confirmation and an explicit repository-allowed merge method; GitHub permissions and branch protection remain authoritative.
 - Local Git actions run on the host that owns the selected workspace. Connected-host behavior depends on the host's Git installation and credentials.
 

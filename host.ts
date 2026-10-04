@@ -6,6 +6,7 @@ import {
   experimental_spawnPortableOutputProcess as spawnOutput,
 } from "@get-bb/plugin-sdk/host";
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
+import { z } from "zod";
 import { gitHostContract } from "./git-host-contract.js";
 
 const MAX_GIT_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -19,7 +20,8 @@ interface GitResult {
   stderr: string;
 }
 
-function runGit(
+function runCommand(
+  command: "git" | "gh",
   args: string[],
   cwd: string,
   signal: AbortSignal,
@@ -33,15 +35,18 @@ function runGit(
     GIT_PAGER: "cat",
     PAGER: "cat",
     GCM_INTERACTIVE: "Never",
+    ...(command === "gh"
+      ? { GH_PROMPT_DISABLED: "1", GH_PAGER: "cat" }
+      : {}),
   };
 
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
-      reject(signal.reason ?? new Error("Git operation cancelled"));
+      reject(signal.reason ?? new Error(`${command} operation cancelled`));
       return;
     }
 
-    const child = spawnOutput({ command: "git", args, cwd, env });
+    const child = spawnOutput({ command, args, cwd, env });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let size = 0;
@@ -54,7 +59,7 @@ function runGit(
     };
 
     const abort = () => {
-      failure = new Error("Git operation cancelled");
+      failure = new Error(`${command} operation cancelled`);
       child.kill("SIGTERM");
     };
 
@@ -62,7 +67,7 @@ function runGit(
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       size += buffer.byteLength;
       if (size > maxBytes) {
-        failure = new Error("Git output exceeded its size limit");
+        failure = new Error(`${command} output exceeded its size limit`);
         child.kill("SIGTERM");
         return;
       }
@@ -71,7 +76,7 @@ function runGit(
 
     signal.addEventListener("abort", abort, { once: true });
     timer = setTimeout(() => {
-      failure = new Error(`Git operation timed out after ${timeoutMs}ms`);
+      failure = new Error(`${command} operation timed out after ${timeoutMs}ms`);
       child.kill("SIGTERM");
     }, timeoutMs);
     timer.unref();
@@ -79,6 +84,19 @@ function runGit(
     child.stderr.on("data", collect(stderr));
     child.once("error", (error) => {
       cleanup();
+      if (
+        command === "gh" &&
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ) {
+        reject(
+          new Error(
+            "GitHub CLI (gh) is not installed on this workspace host. Install gh and authenticate it with `gh auth login`.",
+          ),
+        );
+        return;
+      }
       reject(error);
     });
     child.once("close", (code) => {
@@ -96,6 +114,24 @@ function runGit(
   });
 }
 
+function runGit(
+  args: string[],
+  cwd: string,
+  signal: AbortSignal,
+  options: { timeoutMs?: number; maxBytes?: number } = {},
+): Promise<GitResult> {
+  return runCommand("git", args, cwd, signal, options);
+}
+
+function runGh(
+  args: string[],
+  cwd: string,
+  signal: AbortSignal,
+  options: { timeoutMs?: number; maxBytes?: number } = {},
+): Promise<GitResult> {
+  return runCommand("gh", args, cwd, signal, options);
+}
+
 async function gitText(
   args: string[],
   cwd: string,
@@ -109,6 +145,177 @@ async function gitText(
     );
   }
   return result.stdout.trimEnd();
+}
+
+async function ghText(
+  args: string[],
+  cwd: string,
+  signal: AbortSignal,
+  options?: { timeoutMs?: number; maxBytes?: number },
+): Promise<string> {
+  const result = await runGh(args, cwd, signal, options);
+  if (result.code !== 0) {
+    throw new Error(
+      result.stderr.trim() || result.stdout.trim() || `gh ${args[0]} failed`,
+    );
+  }
+  return result.stdout.trimEnd();
+}
+
+const githubRepositoryViewSchema = z
+  .object({
+    defaultBranchRef: z.object({ name: z.string() }).nullable(),
+    mergeCommitAllowed: z.boolean(),
+    squashMergeAllowed: z.boolean(),
+    rebaseMergeAllowed: z.boolean(),
+    url: z.string().url(),
+  })
+  .passthrough();
+
+const githubPullViewSchema = z
+  .object({
+    number: z.number().int().positive(),
+    title: z.string(),
+    state: z.string(),
+    isDraft: z.boolean(),
+    url: z.string().url(),
+    baseRefName: z.string(),
+    headRefName: z.string(),
+    reviewDecision: z.string().nullable().optional(),
+    mergeStateStatus: z.string().nullable().optional(),
+    statusCheckRollup: z.array(z.unknown()).default([]),
+  })
+  .passthrough();
+
+type MergeMethod = "merge" | "squash" | "rebase";
+type CheckStatus = "success" | "failure" | "pending" | "neutral";
+
+async function githubRepositoryInfo(
+  repository: string,
+  repo: string,
+  signal: AbortSignal,
+) {
+  const result = await ghText(
+    [
+      "repo",
+      "view",
+      repo,
+      "--json",
+      "defaultBranchRef,mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed,url",
+    ],
+    repository,
+    signal,
+  );
+  const data = githubRepositoryViewSchema.parse(JSON.parse(result));
+  const defaultBranch = data.defaultBranchRef?.name;
+  if (defaultBranch === undefined || defaultBranch.length === 0) {
+    throw new Error("GitHub did not report a default branch for this repository.");
+  }
+  const mergeMethods: MergeMethod[] = [];
+  if (data.mergeCommitAllowed) mergeMethods.push("merge");
+  if (data.squashMergeAllowed) mergeMethods.push("squash");
+  if (data.rebaseMergeAllowed) mergeMethods.push("rebase");
+  return { defaultBranch, mergeMethods, url: data.url };
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringValue(...values: unknown[]): string {
+  return values.find((value): value is string => typeof value === "string") ?? "";
+}
+
+function checkStatus(value: Record<string, unknown>): CheckStatus {
+  const conclusion = stringValue(value.conclusion).toUpperCase();
+  const state = stringValue(value.state).toUpperCase();
+  const status = stringValue(value.status).toUpperCase();
+  if (conclusion === "SUCCESS" || state === "SUCCESS") return "success";
+  if (
+    [
+      "FAILURE",
+      "TIMED_OUT",
+      "CANCELLED",
+      "ERROR",
+      "ACTION_REQUIRED",
+      "STALE",
+      "STARTUP_FAILURE",
+    ].includes(conclusion) || ["FAILURE", "ERROR"].includes(state)
+  ) {
+    return "failure";
+  }
+  if (conclusion === "NEUTRAL" || conclusion === "SKIPPED" || state === "NEUTRAL") {
+    return "neutral";
+  }
+  if (
+    ["PENDING", "IN_PROGRESS", "QUEUED", "REQUESTED", "WAITING"].includes(
+      status,
+    ) || ["PENDING", "EXPECTED"].includes(state)
+  ) {
+    return "pending";
+  }
+  return "neutral";
+}
+
+function pullChecks(values: unknown[]): Array<{
+  name: string;
+  status: CheckStatus;
+  url: string;
+}> {
+  return values.map((value) => {
+    const item = objectValue(value);
+    return {
+      name: stringValue(item.name, item.context, item.workflowName) || "Check",
+      status: checkStatus(item),
+      url: stringValue(item.detailsUrl, item.targetUrl),
+    };
+  });
+}
+
+async function githubPullRequest(
+  repository: string,
+  repo: string,
+  signal: AbortSignal,
+  number?: number,
+) {
+  const repoInfo = await githubRepositoryInfo(repository, repo, signal);
+  const args = ["pr", "view"];
+  if (number !== undefined) args.push(String(number));
+  args.push(
+    "--repo",
+    repo,
+    "--json",
+    "number,title,state,isDraft,url,baseRefName,headRefName,reviewDecision,mergeStateStatus,statusCheckRollup",
+  );
+  const result = await runGh(args, repository, signal);
+  if (
+    number === undefined &&
+    result.code !== 0 &&
+    /no pull requests found/iu.test(`${result.stderr}\n${result.stdout}`)
+  ) {
+    return { pull: null };
+  }
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || "gh pr view failed");
+  }
+  const data = githubPullViewSchema.parse(JSON.parse(result.stdout));
+  return {
+    pull: {
+      number: data.number,
+      title: data.title,
+      state: data.state,
+      isDraft: data.isDraft,
+      mergeMethods: repoInfo.mergeMethods,
+      url: data.url,
+      baseRefName: data.baseRefName,
+      headRefName: data.headRefName,
+      reviewDecision: data.reviewDecision ?? "",
+      mergeStateStatus: data.mergeStateStatus ?? "",
+      checks: pullChecks(data.statusCheckRollup),
+    },
+  };
 }
 
 function resolveRepository(root: string, repoPath: string): string {
@@ -321,7 +528,7 @@ async function inspectRepository(
   let branchChanges: Array<{ path: string; status: string }> = [];
   if (branchName !== null && baseBranch !== null) {
     const branchDiff = await runGit(
-      ["diff", "--name-status", "-z", "--no-renames", `${baseBranch}...HEAD", "--"],
+      ["diff", "--name-status", "-z", "--no-renames", `${baseBranch}...HEAD`, "--"],
       repository,
       signal,
     );
@@ -391,7 +598,7 @@ async function diffForFile(
   let branchRaw = "";
   if (status.baseBranch !== null && status.branch !== null) {
     branchRaw = await gitText(
-      ["diff", "--no-color", "--no-ext-diff", "--no-renames", `${status.baseBranch}...HEAD`, "--", filePath],
+      ["diff", "--no-color", "--no-ext-diff", "--no-renames", status.baseBranch + "...HEAD", "--", filePath],
       repository,
       signal,
     );
@@ -430,7 +637,7 @@ async function branchContext(
   if (status.baseBranch !== null && status.branch !== null) {
     sections.push(
       await gitText(
-        ["diff", "--no-color", "--no-ext-diff", "--no-renames", `${status.baseBranch}...HEAD"],
+        ["diff", "--no-color", "--no-ext-diff", "--no-renames", `${status.baseBranch}...HEAD`],
         repository,
         signal,
       ),
@@ -554,12 +761,12 @@ export default experimental_defineHostEntry({
       } else {
         await gitText(["reset", "-q", "--", filePath], repository, context.signal);
       }
-      return { ok: true };
+      return { ok: true as const };
     },
     async stageAll({ root, repoPath }, context) {
       const repository = await assertRepository(root, repoPath, context.signal);
       await gitText(["add", "-A"], repository, context.signal);
-      return { ok: true };
+      return { ok: true as const };
     },
     async stageHunks({ root, repoPath, path: filePath, kind, hunkIndexes }, context) {
       const repository = await assertRepository(root, repoPath, context.signal);
@@ -586,7 +793,7 @@ export default experimental_defineHostEntry({
       }
       const selection = selectedHunks(patch, hunkIndexes);
       await applyHunks(repository, selection, kind === "staged", context.signal);
-      return { ok: true };
+      return { ok: true as const };
     },
     async commit({ root, repoPath, message }, context) {
       const repository = await assertRepository(root, repoPath, context.signal);
@@ -598,7 +805,7 @@ export default experimental_defineHostEntry({
       );
       const hash = await gitText(["rev-parse", "HEAD"], repository, context.signal);
       const subject = await gitText(["log", "-1", "--format=%s"], repository, context.signal);
-      return { ok: true, hash, subject };
+      return { ok: true as const, hash, subject };
     },
     async push({ root, repoPath, remote, branch }, context) {
       const repository = await assertRepository(root, repoPath, context.signal);
@@ -619,7 +826,7 @@ export default experimental_defineHostEntry({
         throw new Error("Both a remote and branch are required for a new upstream");
       }
       await gitText(args, repository, context.signal, { timeoutMs: 120_000 });
-      return { ok: true };
+      return { ok: true as const };
     },
     async createBranch({ root, repoPath, branch }, context) {
       const repository = await assertRepository(root, repoPath, context.signal);
@@ -629,9 +836,89 @@ export default experimental_defineHostEntry({
         timeoutMs: 60_000,
       });
       return {
-        ok: true,
+        ok: true as const,
         branch: await gitText(["branch", "--show-current"], repository, context.signal),
       };
+    },
+    async githubRepository({ root, repoPath, repo }, context) {
+      const repository = await assertRepository(root, repoPath, context.signal);
+      return githubRepositoryInfo(repository, repo, context.signal);
+    },
+    async pullRequest({ root, repoPath, repo, number }, context) {
+      const repository = await assertRepository(root, repoPath, context.signal);
+      return githubPullRequest(repository, repo, context.signal, number);
+    },
+    async createPullRequest(
+      { root, repoPath, repo, title, body, base, head, draft },
+      context,
+    ) {
+      const repository = await assertRepository(root, repoPath, context.signal);
+      const currentBranch = await gitText(
+        ["branch", "--show-current"],
+        repository,
+        context.signal,
+      );
+      if (currentBranch !== head) {
+        throw new Error("The branch changed. Refresh Source Control and try again.");
+      }
+      const validBase = await runGit(
+        ["check-ref-format", "--branch", base],
+        repository,
+        context.signal,
+      );
+      if (validBase.code !== 0) throw new Error("Enter a valid base branch name.");
+      const output = await ghText(
+        [
+          "pr",
+          "create",
+          "--repo",
+          repo,
+          "--title",
+          title,
+          "--body",
+          body,
+          "--base",
+          base,
+          "--head",
+          head,
+          ...(draft ? ["--draft"] : []),
+        ],
+        repository,
+        context.signal,
+        { timeoutMs: 120_000 },
+      );
+      const url = output.match(/https?:\/\/[^\s]+\/pull\/(\d+)\/?/iu);
+      if (url === null) {
+        throw new Error("GitHub did not return the created pull request URL.");
+      }
+      return {
+        ok: true as const,
+        number: Number(url[1]),
+        url: url[0].replace(/\/$/u, ""),
+      };
+    },
+    async mergePullRequest({ root, repoPath, repo, number, method }, context) {
+      const repository = await assertRepository(root, repoPath, context.signal);
+      const info = await githubRepositoryInfo(repository, repo, context.signal);
+      if (!info.mergeMethods.includes(method)) {
+        throw new Error("That merge method is disabled for this repository.");
+      }
+      const { pull } = await githubPullRequest(
+        repository,
+        repo,
+        context.signal,
+        number,
+      );
+      if (pull === null || pull.state !== "OPEN" || pull.isDraft) {
+        throw new Error("Only open, ready-for-review pull requests can be merged.");
+      }
+      await ghText(
+        ["pr", "merge", String(number), "--repo", repo, `--${method}`],
+        repository,
+        context.signal,
+        { timeoutMs: 120_000 },
+      );
+      return { ok: true as const };
     },
   },
 });

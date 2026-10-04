@@ -72,7 +72,6 @@ export function SourceControlPanel({
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [commitMessages, setCommitMessages] = useState<Record<string, string>>({});
-  const [aiMessages, setAiMessages] = useState<Record<string, string>>({});
   const [pulls, setPulls] = useState<Record<string, PullState>>({});
   const [pushTargets, setPushTargets] = useState<
     Record<string, { remote: string; branch: string }>
@@ -87,7 +86,6 @@ export function SourceControlPanel({
     title: string;
     body: string;
     draft: boolean;
-    aiError: string | null;
   } | null>(null);
   const [mergePrompt, setMergePrompt] = useState<{
     repo: GitRepositoryStatus;
@@ -240,23 +238,6 @@ export function SourceControlPanel({
     );
   };
 
-  const generateCommitMessage = (repo: GitRepositoryStatus) => {
-    const activeScope = scopeRef.current;
-    if (activeScope === null) return;
-    void withBusy(`${repo.repoPath}:ai-commit`, async () => {
-      setAiMessages((current) => ({ ...current, [repo.repoPath]: "" }));
-      const result = await rpc.call("suggestCommitMessage", {
-        scope: activeScope,
-        repoPath: repo.repoPath,
-      });
-      if (!result.ok) {
-        setAiMessages((current) => ({ ...current, [repo.repoPath]: result.message }));
-        return;
-      }
-      setCommitMessages((current) => ({ ...current, [repo.repoPath]: result.text }));
-    });
-  };
-
   const commit = (repo: GitRepositoryStatus) => {
     const activeScope = scopeRef.current;
     if (activeScope === null) return;
@@ -297,22 +278,16 @@ export function SourceControlPanel({
     });
   };
 
-  const fillPullForm = async (
+  const fillPullForm = (
     repo: GitRepositoryStatus,
     info: { repo: string; defaultBranch: string },
-    activeScope: ScopeRef,
   ) => {
-    const suggestion = await rpc.call("suggestPullRequest", {
-      scope: activeScope,
-      repoPath: repo.repoPath,
-    });
     setPullForm({
       repo,
       base: info.defaultBranch,
-      title: suggestion.ok ? suggestion.title : "",
-      body: suggestion.ok ? suggestion.body : "",
+      title: "",
+      body: "",
       draft: false,
-      aiError: suggestion.ok ? null : suggestion.message,
     });
   };
 
@@ -333,7 +308,7 @@ export function SourceControlPanel({
         toast.error("Push this branch before creating a pull request.");
         return;
       }
-      await fillPullForm(repo, response, activeScope);
+      fillPullForm(repo, response);
     });
   };
 
@@ -460,7 +435,6 @@ export function SourceControlPanel({
                 isExpanded={expanded.has(repo.repoPath)}
                 isBusy={busy}
                 commitMessage={commitMessages[repo.repoPath] ?? ""}
-                aiMessage={aiMessages[repo.repoPath] ?? ""}
                 pullState={pulls[repo.repoPath]}
                 pushTarget={pushTargets[repo.repoPath] ?? {
                   remote: "",
@@ -475,7 +449,6 @@ export function SourceControlPanel({
                 onCommitMessageChange={(value) =>
                   setCommitMessages((current) => ({ ...current, [repo.repoPath]: value }))
                 }
-                onGenerateCommit={() => generateCommitMessage(repo)}
                 onCommit={() => commit(repo)}
                 onPushTargetChange={(target) =>
                   setPushTargets((current) => ({ ...current, [repo.repoPath]: target }))
@@ -529,7 +502,7 @@ export function SourceControlPanel({
           <DialogHeader>
             <DialogTitle>Create pull request</DialogTitle>
             <DialogDescription>
-              Review the AI draft and detected base branch before creating this GitHub pull request.
+              Enter a title and description, then review the detected base branch before creating this GitHub pull request.
             </DialogDescription>
           </DialogHeader>
           {pullForm !== null ? (
@@ -567,19 +540,6 @@ export function SourceControlPanel({
                 />
                 Create as draft
               </label>
-              {pullForm.aiError !== null ? (
-                <div className="flex items-center justify-between gap-3 rounded-md bg-surface-attention px-3 py-2 text-xs text-warning-text">
-                  <span>{pullForm.aiError} You can enter the text manually.</span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busy.has(`${pullForm.repo.repoPath}:ai-pr`)}
-                    onClick={() => void regeneratePullDraft()}
-                  >
-                    Retry AI
-                  </Button>
-                </div>
-              ) : null}
             </div>
           ) : null}
           <DialogFooter>
@@ -651,27 +611,6 @@ export function SourceControlPanel({
     </div>
   );
 
-  async function regeneratePullDraft() {
-    const activeScope = scopeRef.current;
-    if (activeScope === null || pullForm === null) return;
-    const repoPath = pullForm.repo.repoPath;
-    await withBusy(`${repoPath}:ai-pr`, async () => {
-      const result = await rpc.call("suggestPullRequest", {
-        scope: activeScope,
-        repoPath,
-      });
-      if (!result.ok) {
-        setPullForm((current) => current === null ? null : { ...current, aiError: result.message });
-        return;
-      }
-      setPullForm((current) => current === null ? null : {
-        ...current,
-        title: result.title,
-        body: result.body,
-        aiError: null,
-      });
-    });
-  }
 }
 
 function RepositoryGroup({
@@ -679,7 +618,6 @@ function RepositoryGroup({
   isExpanded,
   isBusy,
   commitMessage,
-  aiMessage,
   pullState,
   pushTarget,
   unsavedPaths,
@@ -689,7 +627,6 @@ function RepositoryGroup({
   onStageFile,
   onStageAll,
   onCommitMessageChange,
-  onGenerateCommit,
   onCommit,
   onPushTargetChange,
   onPush,
@@ -701,7 +638,6 @@ function RepositoryGroup({
   isExpanded: boolean;
   isBusy: ReadonlySet<string>;
   commitMessage: string;
-  aiMessage: string;
   pullState: PullState | undefined;
   pushTarget: { remote: string; branch: string };
   unsavedPaths: ReadonlySet<string>;
@@ -711,7 +647,6 @@ function RepositoryGroup({
   onStageFile: (path: string, stage: boolean) => void;
   onStageAll: () => void;
   onCommitMessageChange: (value: string) => void;
-  onGenerateCommit: () => void;
   onCommit: () => void;
   onPushTargetChange: (target: { remote: string; branch: string }) => void;
   onPush: () => void;
@@ -822,13 +757,7 @@ function RepositoryGroup({
           ) : null}
 
           <div className="space-y-2 border-t border-border pt-3">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-xs font-semibold">Commit</h3>
-              <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" disabled={staged.length === 0 || isBusy.has(`${key}:ai-commit`)} onClick={onGenerateCommit}>
-                <Icon name="AiContentGenerator01" aria-hidden className="size-3.5" />
-                Generate
-              </Button>
-            </div>
+            <h3 className="text-xs font-semibold">Commit</h3>
             <textarea
               value={commitMessage}
               onChange={(event) => onCommitMessageChange(event.target.value)}
@@ -838,7 +767,6 @@ function RepositoryGroup({
               aria-label={`Commit message for ${repo.repoPath || "workspace root"}`}
               className="min-h-16 w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 text-sm focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
             />
-            {aiMessage !== "" ? <p className="text-xs text-warning-text">AI suggestion unavailable: {aiMessage} Manual commit is still available.</p> : null}
             <Button className="w-full" size="sm" disabled={staged.length === 0 || commitMessage.trim() === "" || commitBusy} onClick={onCommit}>
               <Icon name="Check" aria-hidden className="size-4" />
               {commitBusy ? "Committing…" : `Commit Staged (${staged.length})`}

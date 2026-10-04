@@ -87,79 +87,6 @@ const gitRepositoryStatusSchema = z
   .strict();
 export type GitRepositoryStatus = z.infer<typeof gitRepositoryStatusSchema>;
 
-const aiDraftResponseSchema = z.discriminatedUnion("ok", [
-  z
-    .object({
-      ok: z.literal(true),
-      text: z.string(),
-      pluginId: z.string(),
-      serviceId: z.string(),
-      displayName: z.string(),
-    })
-    .strict(),
-  z
-    .object({ ok: z.literal(false), message: z.string().min(1) })
-    .strict(),
-]);
-
-const pullDraftResponseSchema = z.discriminatedUnion("ok", [
-  z
-    .object({
-      ok: z.literal(true),
-      title: z.string(),
-      body: z.string(),
-      pluginId: z.string(),
-      serviceId: z.string(),
-      displayName: z.string(),
-    })
-    .strict(),
-  z
-    .object({ ok: z.literal(false), message: z.string().min(1) })
-    .strict(),
-]);
-
-const githubRepositoryInfoResponseSchema = z
-  .object({
-    defaultBranch: z.string().min(1),
-    mergeMethods: z.array(z.enum(["merge", "squash", "rebase"])),
-    url: z.string().url(),
-  })
-  .strict();
-
-const githubPullNumberResponseSchema = z
-  .object({ number: z.number().int().positive().nullable() })
-  .strict();
-
-const githubPullResponseSchema = z.object({
-  pull: z
-    .object({
-      number: z.number().int().positive(),
-      title: z.string(),
-      state: z.string(),
-      url: z.string(),
-      baseRefName: z.string(),
-      headRefName: z.string(),
-      reviewDecision: z.string(),
-      mergeStateStatus: z.string(),
-      checks: z.array(
-        z
-          .object({
-            name: z.string(),
-            status: z.enum(["success", "failure", "pending", "neutral"]),
-            url: z.string(),
-          })
-          .strict(),
-      ),
-    })
-    .passthrough(),
-});
-
-const githubCreatePullResponseSchema = z
-  .object({ number: z.number().int().positive(), url: z.string().url() })
-  .strict();
-
-const githubOkResponseSchema = z.object({ ok: z.literal(true) }).strict();
-
 const resolvedScopeSchema = z.object({
   root: z.string(),
   hostId: z.string(),
@@ -306,14 +233,6 @@ export const rpcContract = defineRpcContract({
       })
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
-  },
-  suggestCommitMessage: {
-    input: z.object({ scope: scopeSchema, repoPath: z.string() }).strict(),
-    output: aiDraftResponseSchema,
-  },
-  suggestPullRequest: {
-    input: z.object({ scope: scopeSchema, repoPath: z.string() }).strict(),
-    output: pullDraftResponseSchema,
   },
   commit: {
     input: z
@@ -921,69 +840,6 @@ export default function plugin(bb: BbPluginApi) {
         { hostId: target.hostId, timeoutMs: 60_000 },
       );
     },
-    async suggestCommitMessage({ scope, repoPath }) {
-      const target = await gitTarget(scope, repoPath);
-      const diff = await gitHost.call(
-        "context",
-        { root: target.root, repoPath: target.repoPath, kind: "staged" },
-        { hostId: target.hostId, timeoutMs: 60_000 },
-      );
-      if (diff.text.trim() === "") {
-        return aiFailure("Stage changes before generating a commit message.");
-      }
-      const completion = await bb.sdk.system.experimental_completeText({
-        task: "commit-message",
-        prompt:
-          "Write one concise imperative commit subject, no more than 72 characters. Return only the subject line.\n\nStaged diff:\n" +
-          diff.text,
-      });
-      if (!completion.ok) return aiFailure(completion.message);
-      return {
-        ok: true as const,
-        text: completion.text.split(/\r?\n/u)[0]!.trim(),
-        pluginId: completion.pluginId,
-        serviceId: completion.serviceId,
-        displayName: completion.displayName,
-      };
-    },
-    async suggestPullRequest({ scope, repoPath }) {
-      const target = await gitTarget(scope, repoPath);
-      const diff = await gitHost.call(
-        "context",
-        { root: target.root, repoPath: target.repoPath, kind: "branch" },
-        { hostId: target.hostId, timeoutMs: 120_000 },
-      );
-      if (diff.text.trim() === "") {
-        return aiFailure("Add branch changes before generating a pull request draft.");
-      }
-      const completion = await bb.sdk.system.experimental_completeText({
-        task: "commit-message",
-        prompt:
-          "Draft a pull request title and body from this committed branch diff. Return only a JSON object with string fields `title` and `body`. Keep the title concise and write a useful Markdown summary. Do not claim checks or tests were run unless the diff explicitly records that; otherwise say testing was not run.\n\nBranch diff:\n" +
-          diff.text,
-      });
-      if (!completion.ok) return aiFailure(completion.message);
-      try {
-        const candidate = completion.text
-          .replace(/^```(?:json)?\s*/iu, "")
-          .replace(/\s*```$/u, "")
-          .trim();
-        const value = JSON.parse(candidate) as { title?: unknown; body?: unknown };
-        if (typeof value.title !== "string" || typeof value.body !== "string") {
-          throw new Error("Missing title or body");
-        }
-        return {
-          ok: true as const,
-          title: value.title.trim().slice(0, 256),
-          body: value.body.trim().slice(0, 50_000),
-          pluginId: completion.pluginId,
-          serviceId: completion.serviceId,
-          displayName: completion.displayName,
-        };
-      } catch {
-        return aiFailure("The AI reply did not contain a readable pull request draft.");
-      }
-    },
     async commit({ scope, repoPath, message }) {
       const target = await gitTarget(scope, repoPath);
       return gitHost.call(
@@ -1011,13 +867,12 @@ export default function plugin(bb: BbPluginApi) {
     },
     async githubRepository({ scope, repoPath }) {
       try {
-        const { repo } = await githubRepository(scope, repoPath);
-        const info = await bb.sdk.plugins.callRpc({
-          pluginId: "github",
-          method: "repositoryInfo",
-          input: { repo },
-          outputSchema: githubRepositoryInfoResponseSchema,
-        });
+        const { repo, target } = await githubRepository(scope, repoPath);
+        const info = await gitHost.call(
+          "githubRepository",
+          { root: target.root, repoPath: target.repoPath, repo },
+          { hostId: target.hostId, timeoutMs: 120_000 },
+        );
         return { ok: true as const, repo, ...info };
       } catch (error) {
         return {
@@ -1028,74 +883,44 @@ export default function plugin(bb: BbPluginApi) {
     },
     async pullRequest({ scope, repoPath }) {
       try {
-        const { repo, status } = await githubRepository(
-          scope,
-          repoPath,
-        );
+        const { repo, status, target } = await githubRepository(scope, repoPath);
         if (status.branch === null) {
           return { ok: true as const, pull: null };
         }
-        const found = await bb.sdk.plugins.callRpc({
-          pluginId: "github",
-          method: "findPullRequest",
-          input: { repo, head: status.branch },
-          outputSchema: githubPullNumberResponseSchema,
-        });
-        if (found.number === null) return { ok: true as const, pull: null };
-        const repositoryInfo = await bb.sdk.plugins.callRpc({
-          pluginId: "github",
-          method: "repositoryInfo",
-          input: { repo },
-          outputSchema: githubRepositoryInfoResponseSchema,
-        });
-        const result = await bb.sdk.plugins.callRpc({
-          pluginId: "github",
-          method: "getPull",
-          input: { repo, number: found.number },
-          outputSchema: githubPullResponseSchema,
-        });
+        const result = await gitHost.call(
+          "pullRequest",
+          { root: target.root, repoPath: target.repoPath, repo },
+          { hostId: target.hostId, timeoutMs: 120_000 },
+        );
         return {
           ok: true as const,
-          pull: {
-            number: result.pull.number,
-            title: result.pull.title,
-            state: result.pull.state,
-            isDraft: result.pull.state === "DRAFT",
-            mergeMethods: repositoryInfo.mergeMethods,
-            url: result.pull.url,
-            baseRefName: result.pull.baseRefName,
-            headRefName: result.pull.headRefName,
-            reviewDecision: result.pull.reviewDecision,
-            mergeStateStatus: result.pull.mergeStateStatus,
-            checks: result.pull.checks,
-          },
+          pull: result.pull,
         };
       } catch (error) {
         return { ok: false as const, message: describe(error) };
       }
     },
     async createPullRequest({ scope, repoPath, title, body, base, draft }) {
-      const { repo, status } = await githubRepository(
-        scope,
-        repoPath,
+      const { repo, status, target } = await githubRepository(scope, repoPath);
+      if (status.branch === null) {
+        throw new Error("This repository is detached from a branch.");
+      }
+      const info = await gitHost.call(
+        "githubRepository",
+        { root: target.root, repoPath: target.repoPath, repo },
+        { hostId: target.hostId, timeoutMs: 120_000 },
       );
-      const info = await bb.sdk.plugins.callRpc({
-        pluginId: "github",
-        method: "repositoryInfo",
-        input: { repo },
-        outputSchema: githubRepositoryInfoResponseSchema,
-      });
       if (status.branch === info.defaultBranch) {
         throw new Error("Create a feature branch before opening a pull request.");
       }
       if (status.upstream === null || status.ahead > 0) {
         throw new Error("Push this branch before creating a pull request.");
       }
-      if (status.branch === null) throw new Error("This repository is detached from a branch.");
-      const created = await bb.sdk.plugins.callRpc({
-        pluginId: "github",
-        method: "createPullRequest",
-        input: {
+      return gitHost.call(
+        "createPullRequest",
+        {
+          root: target.root,
+          repoPath: target.repoPath,
           repo,
           title,
           body,
@@ -1103,37 +928,41 @@ export default function plugin(bb: BbPluginApi) {
           head: status.branch,
           draft,
         },
-        outputSchema: githubCreatePullResponseSchema,
-      });
-      return { ok: true as const, ...created };
+        { hostId: target.hostId, timeoutMs: 180_000 },
+      );
     },
     async mergePullRequest({ scope, repoPath, number, method }) {
-      const { repo } = await githubRepository(scope, repoPath);
-      const info = await bb.sdk.plugins.callRpc({
-        pluginId: "github",
-        method: "repositoryInfo",
-        input: { repo },
-        outputSchema: githubRepositoryInfoResponseSchema,
-      });
+      const { repo, status, target } = await githubRepository(scope, repoPath);
+      const input = { root: target.root, repoPath: target.repoPath, repo };
+      const [info, currentPull] = await Promise.all([
+        gitHost.call("githubRepository", input, {
+          hostId: target.hostId,
+          timeoutMs: 120_000,
+        }),
+        gitHost.call("pullRequest", { ...input, number }, {
+          hostId: target.hostId,
+          timeoutMs: 120_000,
+        }),
+      ]);
       if (!info.mergeMethods.includes(method)) {
         throw new Error("That merge method is disabled for this repository.");
       }
-      const currentPull = await bb.sdk.plugins.callRpc({
-        pluginId: "github",
-        method: "getPull",
-        input: { repo, number },
-        outputSchema: githubPullResponseSchema,
-      });
-      if (currentPull.pull.state !== "OPEN") {
-        throw new Error("Only open, ready-for-review pull requests can be merged.");
+      if (
+        currentPull.pull === null ||
+        currentPull.pull.state !== "OPEN" ||
+        currentPull.pull.isDraft ||
+        status.branch === null ||
+        currentPull.pull.headRefName !== status.branch
+      ) {
+        throw new Error(
+          "Only the open, ready-for-review pull request for this repository's current branch can be merged.",
+        );
       }
-      await bb.sdk.plugins.callRpc({
-        pluginId: "github",
-        method: "mergePullRequest",
-        input: { repo, number, method },
-        outputSchema: githubOkResponseSchema,
-      });
-      return { ok: true as const };
+      return gitHost.call(
+        "mergePullRequest",
+        { ...input, number, method },
+        { hostId: target.hostId, timeoutMs: 180_000 },
+      );
     },
   });
 
@@ -1315,10 +1144,6 @@ async function mapWithConcurrency<Input, Output>(
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function aiFailure(message: string) {
-  return { ok: false as const, message };
 }
 
 /**

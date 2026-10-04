@@ -27,6 +27,37 @@ const remoteSchema = z
   .object({ name: z.string(), url: z.string() })
   .strict();
 
+const githubRepositorySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u);
+
+const mergeMethodSchema = z.enum(["merge", "squash", "rebase"]);
+
+const pullRequestSchema = z
+  .object({
+    number: z.number().int().positive(),
+    title: z.string(),
+    state: z.string(),
+    isDraft: z.boolean(),
+    mergeMethods: z.array(mergeMethodSchema),
+    url: z.string().url(),
+    baseRefName: z.string(),
+    headRefName: z.string(),
+    reviewDecision: z.string(),
+    mergeStateStatus: z.string(),
+    checks: z
+      .array(
+        z
+          .object({
+            name: z.string(),
+            status: z.enum(["success", "failure", "pending", "neutral"]),
+            url: z.string(),
+          })
+          .strict(),
+      ),
+  })
+  .strict();
+
 export const gitHostContract = defineRpcContract({
   discoverRepositories: {
     input: z
@@ -125,5 +156,52 @@ export const gitHostContract = defineRpcContract({
       .extend({ branch: z.string().trim().min(1).max(200) })
       .strict(),
     output: z.object({ ok: z.literal(true), branch: z.string() }).strict(),
+  },
+  githubRepository: {
+    input: repositoryInputSchema
+      .extend({ repo: githubRepositorySchema })
+      .strict(),
+    output: z
+      .object({
+        defaultBranch: z.string().min(1),
+        mergeMethods: z.array(mergeMethodSchema),
+        url: z.string().url(),
+      })
+      .strict(),
+  },
+  pullRequest: {
+    input: repositoryInputSchema
+      .extend({ repo: githubRepositorySchema, number: z.number().int().positive().optional() })
+      .strict(),
+    output: z.object({ pull: pullRequestSchema.nullable() }).strict(),
+  },
+  createPullRequest: {
+    input: repositoryInputSchema
+      .extend({
+        repo: githubRepositorySchema,
+        title: z.string().trim().min(1).max(256),
+        body: z.string().max(50_000),
+        base: z.string().trim().min(1).max(255),
+        head: z.string().trim().min(1).max(255),
+        draft: z.boolean(),
+      })
+      .strict(),
+    output: z
+      .object({
+        ok: z.literal(true),
+        number: z.number().int().positive(),
+        url: z.string().url(),
+      })
+      .strict(),
+  },
+  mergePullRequest: {
+    input: repositoryInputSchema
+      .extend({
+        repo: githubRepositorySchema,
+        number: z.number().int().positive(),
+        method: mergeMethodSchema,
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
   },
 });

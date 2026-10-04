@@ -1,11 +1,11 @@
 {
   "name": "wernerbihl-bb-plugin-files-editor",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A responsive VS Code-style workbench for browsing, editing, and reviewing Git changes across a project's repositories.",
   "type": "module",
   "engines": {
     "bb": ">=0.40",
-    "bbPluginSdk": ">=0.6.17"
+    "bbPluginSdk": ">=0.6.15"
   },
   "bb": {
     "name": "WernerBihl Files",
@@ -34,7 +34,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.6.17",
+    "@get-bb/plugin-sdk": "0.6.15",
     "@pierre/diffs": "^1.2.9",
     "@radix-ui/react-alert-dialog": "^1.1.19",
     "@radix-ui/react-context-menu": "^2.3.3",

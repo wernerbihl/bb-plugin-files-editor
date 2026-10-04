@@ -25,16 +25,14 @@ with invented project data, so no real repository or thread titles appear in it.
   unstaged, untracked, and committed branch changes; open individual diffs or
   an _All Changes_ editor tab. Stage whole files everywhere and individual
   hunks on desktop.
-- **Per-repository Git actions.** Generate an editable commit subject from the
-  staged diff with BB's configured AI service, commit only staged files, and
-  push explicitly to the upstream. If there is no upstream, choose a configured
+- **Per-repository Git actions.** Enter a commit subject manually, commit only
+  staged files, and push explicitly to the upstream. If there is no upstream, choose a configured
   remote and branch. Unsaved drafts prompt to save, discard, or cancel before
   staging or committing their file.
-- **GitHub pull requests.** With the BB GitHub plugin installed and authenticated,
-  view PR status, draft editable title and body text from the committed branch
-  diff, create a ready-for-review PR by default, and confirm a merge method
-  enabled by the repository. BB's experimental text-completion API is required
-  for AI suggestions; manual commit and PR text remains available without it.
+- **GitHub pull requests.** On a workspace host with GitHub CLI (`gh`) installed
+  and authenticated, view PR status, enter a title and description manually,
+  create a ready-for-review PR by default, and confirm a merge method enabled
+  by the repository.
 - **Two searches.** At the top of the tree, type to prune it to matching paths
   with every directory above them opened; <kbd>⌘P</kbd> opens the ranked
   go-to-file palette instead. Inside a file, the magnifier in the toolbar (or
@@ -91,11 +89,12 @@ big enough to truncate a listing on their own. Remove one to browse it, or add
 ## Install
 
 ```sh
-bb plugin install git:https://github.com/wernerbihl/bb-plugin-files-editor.git@^0.2.0
+bb plugin install git:https://github.com/wernerbihl/bb-plugin-files-editor.git@main
 ```
 
-That tracks the 0.x line, so `bb plugin outdated` and `bb plugin update` pick up
-later releases. To work on it locally instead, clone it and install the path:
+That tracks the `main` branch, so `bb plugin outdated` and `bb plugin update`
+pick up later commits pushed there. To work on it locally instead, clone it and
+install the path:
 
 ```sh
 bb plugin install /path/to/bb-plugin-files-editor
@@ -132,7 +131,8 @@ route encoding. `server.ts` is mostly wiring; the components are the view.
   BB's source viewer accepts. Editing selects the exact match.
 - Files over 4 MB open read-only.
 - Git operations run on the machine that owns the selected workspace and require
-  Git to be installed there. GitHub PR controls require the BB GitHub plugin's
-  existing `gh` authentication. AI draft generation requires Plugin SDK 0.6.17 or later
-  with `sdk.system.experimental_completeText`; that API is experimental.
+  Git to be installed there. GitHub PR controls also require GitHub CLI (`gh`)
+  installed and authenticated on each workspace host where you use them. Commit
+  messages and pull request text are entered manually. This version supports
+  BB Plugin SDK 0.6.15 and later.
 - The tree does not create, rename, or delete files.
